@@ -15,11 +15,13 @@ M0 has no provider API and needs no cassette. When a provider adapter ships, rec
 ## Current checks
 
 ```sh
-cargo test -p effortline-core
+cargo test -p effortline-core --locked
 cargo fmt --all --check
-cargo clippy -p effortline-core --all-targets -- -D warnings
-cargo check --workspace
+cargo clippy -p effortline-core --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 pnpm --dir apps/desktop check
+pnpm --dir apps/desktop lint
+pnpm --dir apps/desktop format:check
 pnpm --dir apps/desktop build
 ```
 

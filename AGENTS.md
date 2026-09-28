@@ -29,11 +29,13 @@ This is the canonical entry point for coding agents. Read it before changing cod
 
 ## Commands
 
-- Rust core tests: `cargo test -p effortline-core`
+- Rust core tests: `cargo test -p effortline-core --locked`
 - Rust core format: `cargo fmt --all --check`
-- Rust core lint: `cargo clippy -p effortline-core --all-targets -- -D warnings`
-- Desktop Rust check: `cargo check --workspace`
+- Rust core lint: `cargo clippy -p effortline-core --all-targets --locked -- -D warnings`
+- Desktop and core lint: `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - Desktop type check: `pnpm --dir apps/desktop check`
+- Desktop lint: `pnpm --dir apps/desktop lint`
+- Desktop format check: `pnpm --dir apps/desktop format:check`
 - Desktop build: `pnpm --dir apps/desktop build`
 - Desktop development: `pnpm --dir apps/desktop tauri dev`
 

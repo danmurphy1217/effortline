@@ -21,6 +21,18 @@ pnpm --dir apps/desktop tauri dev
 
 `cargo test -p effortline-core` currently checks only that the empty core crate builds. It does not test product behavior yet.
 
+Before a code change, run the relevant checks:
+
+```sh
+cargo test -p effortline-core --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+pnpm --dir apps/desktop check
+pnpm --dir apps/desktop lint
+pnpm --dir apps/desktop format:check
+pnpm --dir apps/desktop build
+```
+
 ## Project rules
 
 - [Architecture and product boundaries](docs/engineering/architecture.md)

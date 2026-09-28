@@ -7,7 +7,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "lint": "eslint src vite.config.ts --max-warnings 0",
+    "format:check": "prettier --check src vite.config.ts eslint.config.mjs index.html package.json tsconfig.json tsconfig.node.json",
+    "format": "prettier --write src vite.config.ts eslint.config.mjs index.html package.json tsconfig.json tsconfig.node.json",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -17,10 +20,16 @@
     "@tauri-apps/api": "^2"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^6.0.2",
+    "eslint": "10.11.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "prettier": "3.9.9",
     "typescript": "~6.0.3",
+    "typescript-eslint": "8.71.0",
     "vite": "^8.0.16",
     "@tauri-apps/cli": "^2"
   }

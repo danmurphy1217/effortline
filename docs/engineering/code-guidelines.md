@@ -4,7 +4,7 @@ These rules apply to new and changed code. They make behavior clear without addi
 
 ## Write clear, typed code
 
-- Use `rustfmt` for Rust and the existing strict TypeScript settings for the interface. Keep formatting changes limited to files you intend to change. Do not silence a compiler or lint error without explaining why a focused fix is not right.
+- Use `rustfmt` and Clippy for Rust. Use Prettier, ESLint, and strict TypeScript checks for the interface and its build config. Keep formatting changes limited to files you intend to change. Do not silence a compiler or lint error without explaining why a focused fix is not right.
 - Give public functions and cross-boundary values explicit types. Use a named request or result type when it makes a contract clearer. Do not pass an untyped JSON object through the app because it is quick to write.
 - Name functions for what they do. Use `find_*` when absence is normal, `get_*` when absence is an error, and `list_*` for a collection. Make mutation names say whether they create, update, import, or delete. State what happens on a repeat call.
 - Keep each function focused on one decision or operation. Extract code when it gives a rule one owner or makes a hard path easier to read. Do not add an interface, trait, hook, or helper only to hide a few repeated lines.

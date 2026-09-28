@@ -34,6 +34,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: pnpm/action-setup@v6
         with:
           version: 10.31.0
@@ -44,5 +46,7 @@ jobs:
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm --dir apps/desktop install --frozen-lockfile
       - run: pnpm --dir apps/desktop check
+      - run: pnpm --dir apps/desktop lint
+      - run: pnpm --dir apps/desktop format:check
       - run: pnpm --dir apps/desktop build
-      - run: cargo check --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
