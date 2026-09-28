@@ -329,6 +329,19 @@ fn reads_synthetic_compressed_standard_timestamp() {
 }
 
 #[test]
+fn reads_synthetic_compressed_speed_distance_fallback() {
+    let mut data = activity_data();
+    data.extend(definition(2, 20, &[(253, 4, 0x86), (8, 3, 0x0d)]));
+    data.push(2);
+    data.extend((FIT_TIME + 1).to_le_bytes());
+    data.extend([0xfa, 0x00, 0x08]); // 12-bit speed 250, then 12-bit distance 128.
+
+    let activity = import_fit_activity(&fit_file(&data, 12)).unwrap();
+    assert_eq!(activity.data.samples[1].speed_m_s, Some(2.5));
+    assert_eq!(activity.data.samples[1].distance_m, Some(8.0));
+}
+
+#[test]
 fn rejects_synthetic_definition_flood() {
     let mut data = activity_data();
     for _ in 0..MAX_FIT_DEFINITIONS {
