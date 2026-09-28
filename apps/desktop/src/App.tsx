@@ -108,7 +108,7 @@ function App() {
                 </dd>
               </div>
               <div>
-                <dt>Duration</dt>
+                <dt>Elapsed time</dt>
                 <dd>{formatDuration(response.preview.duration_seconds)}</dd>
               </div>
               <div>
