@@ -1,0 +1,22 @@
+# Build output and local tools
+/target/
+**/node_modules/
+**/dist/
+**/src-tauri/gen/
+.DS_Store
+
+# Secrets and private athlete data
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.fit
+*.FIT
+*.tcx
+*.gpx
+*.zip
+/private/
+/exports/
+/data/private/

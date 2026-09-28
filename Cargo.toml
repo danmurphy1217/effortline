@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/effortline-core", "apps/desktop/src-tauri"]
+default-members = ["crates/effortline-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/danmurphy1217/effortline"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
