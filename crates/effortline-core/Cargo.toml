@@ -5,3 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Portable data and analysis core for Effortline"
+
+[dependencies]
+fitparser = "0.11.0"
+sha2 = "0.10.9"
