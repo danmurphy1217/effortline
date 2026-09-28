@@ -21,7 +21,7 @@ This is the canonical entry point for coding agents. Read it before changing cod
 
 ## Required workflow
 
-1. Read [architecture](docs/engineering/architecture.md), [testing](docs/engineering/testing.md), and [delivery](docs/engineering/delivery.md). Read any local guide for the files you change.
+1. Read [architecture](docs/engineering/architecture.md), [code guidelines](docs/engineering/code-guidelines.md), [testing](docs/engineering/testing.md), and [delivery](docs/engineering/delivery.md). Read any local guide for the files you change.
 2. Inspect nearby code and tests. State the intended behavior and any material uncertainty before a broad change.
 3. Make the smallest complete change. Do not copy product code or configuration from another project. Do not add speculative layers or tests.
 4. Run checks that match the risk. Review the full diff and scan for secrets or private activity data before a commit or push.

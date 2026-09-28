@@ -24,6 +24,7 @@ pnpm --dir apps/desktop tauri dev
 ## Project rules
 
 - [Architecture and product boundaries](docs/engineering/architecture.md)
+- [Code guidelines](docs/engineering/code-guidelines.md)
 - [Testing strategy](docs/engineering/testing.md)
 - [How to make a safe change](docs/engineering/delivery.md)
 - [Agent instructions](AGENTS.md)

@@ -4,7 +4,7 @@ This guide keeps a small change complete without adding work that the product do
 
 ## Steps
 
-1. Read [agent instructions](../../AGENTS.md) and the [architecture](architecture.md). Identify the owner of the behavior you will change.
+1. Read [agent instructions](../../AGENTS.md), the [architecture](architecture.md), and the [code guidelines](code-guidelines.md). Identify the owner of the behavior you will change.
 2. Inspect the current code and tests. State the user-visible result, failure path, and any contract or migration that changes.
 3. Edit the owning module. Keep inputs typed and validate them at the boundary. Preserve original source data and stable error codes.
 4. Add only tests for consequential behavior that no stronger existing test protects. Use real storage for durability paths and real recorded provider exchanges only when a provider adapter exists.
@@ -24,5 +24,6 @@ For the current foundation, run the commands in [Testing strategy](testing.md). 
 ## Related
 
 - [Architecture and product boundaries](architecture.md)
+- [Code guidelines](code-guidelines.md)
 - [Testing strategy](testing.md)
 - [Project status and setup](../../README.md)
