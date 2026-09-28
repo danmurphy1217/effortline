@@ -1,20 +1,24 @@
 //! Provider-neutral import of one FIT activity from untrusted bytes.
 
-use fitparser::de::{DecodeOption, FitObject, FitStreamProcessor};
+use fitparser::de::{FitObject, FitStreamProcessor};
 use fitparser::profile::MesgNum;
 use fitparser::{ErrorKind, FitDataField, FitDataRecord, Value};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// Maximum FIT file size accepted by this importer (16 MiB).
 pub const MAX_FIT_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum number of FIT data messages accepted, including non-sample messages.
 pub const MAX_FIT_RECORDS: usize = 100_000;
+/// Maximum number of FIT definition messages accepted.
+pub const MAX_FIT_DEFINITIONS: usize = 10_000;
 
 /// Stable error code for import failures. No raw file contents enter an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportError {
     TooLarge,
     TooManyRecords,
+    TooManyDefinitions,
     Truncated,
     Corrupt,
     Unsupported,
@@ -26,6 +30,7 @@ impl ImportError {
         match self {
             Self::TooLarge => "fit_too_large",
             Self::TooManyRecords => "fit_too_many_records",
+            Self::TooManyDefinitions => "fit_too_many_definitions",
             Self::Truncated => "fit_truncated",
             Self::Corrupt => "fit_corrupt",
             Self::Unsupported => "fit_unsupported",
@@ -87,15 +92,22 @@ pub struct ImportedActivity {
     pub data: ActivityData,
 }
 
+struct DefinitionLayout {
+    data_size: usize,
+    developer_fields: Vec<(u8, u8, u8)>, // developer index, field number, byte size
+}
+
 /// Import one FIT activity. The caller keeps the original bytes for later encrypted storage.
 /// The same bytes always produce the same source identity; this function writes nothing.
 pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError> {
-    validate_envelope(bytes)?;
+    let data_end = validate_envelope(bytes)?;
 
     let mut processor = FitStreamProcessor::new();
-    processor.add_option(DecodeOption::ReturnNumericEnumValues);
+    let mut definitions: [Option<DefinitionLayout>; 16] = std::array::from_fn(|_| None);
+    let mut developer_widths: HashMap<(u8, u8), u8> = HashMap::new();
     let mut remaining = bytes;
     let mut data_messages = 0;
+    let mut definition_messages = 0;
     let mut saw_crc = false;
     let mut file_type = None;
     let mut provenance = FitProvenance::default();
@@ -107,6 +119,39 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
     let mut samples = Vec::new();
 
     while !remaining.is_empty() {
+        let offset = bytes.len() - remaining.len();
+        if offset >= usize::from(bytes[0]) && offset < data_end {
+            let header = remaining[0];
+            let data_remaining = data_end - offset;
+            if header & 0x80 == 0 && header & 0x40 != 0 {
+                definition_messages += 1;
+                if definition_messages > MAX_FIT_DEFINITIONS {
+                    return Err(ImportError::TooManyDefinitions);
+                }
+                let (local, layout) = check_definition(&remaining[..data_remaining])?;
+                definitions[usize::from(local)] = Some(layout);
+            } else {
+                let local = if header & 0x80 != 0 {
+                    (header >> 5) & 0x03
+                } else {
+                    header & 0x0f
+                };
+                let layout = definitions[usize::from(local)]
+                    .as_ref()
+                    .ok_or(ImportError::Corrupt)?;
+                if layout.data_size > data_remaining {
+                    return Err(ImportError::Corrupt);
+                }
+                for &(developer_index, field_number, size) in &layout.developer_fields {
+                    let width = developer_widths
+                        .get(&(developer_index, field_number))
+                        .ok_or(ImportError::Corrupt)?;
+                    if size % width != 0 {
+                        return Err(ImportError::Corrupt);
+                    }
+                }
+            }
+        }
         let (next, object) = processor
             .deserialize_next(remaining)
             .map_err(|error| map_parser_error(&error))?;
@@ -122,6 +167,40 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
                 if data_messages > MAX_FIT_RECORDS {
                     return Err(ImportError::TooManyRecords);
                 }
+                let raw = message.fields();
+                let raw_file_type = raw.get(&0).and_then(enum_value);
+                let raw_manufacturer = raw.get(&1).and_then(uint16_value);
+                let raw_product = raw.get(&2).and_then(uint16_value);
+                let raw_sport = raw.get(&5).and_then(enum_value);
+                let raw_distance = raw.get(&5).and_then(uint32_value);
+                let raw_speed = raw
+                    .get(&73)
+                    .and_then(uint32_value)
+                    .map(u64::from)
+                    .or_else(|| raw.get(&6).and_then(uint16_value).map(u64::from));
+                let raw_heart_rate = raw.get(&3).and_then(uint8_value);
+                let compressed_timestamp = message.time_offset().is_some();
+                let developer_count = message.developer_fields().len();
+                let developer_description = if message.global_message_number() == 206 {
+                    raw.get(&0)
+                        .and_then(unsigned_value)
+                        .zip(raw.get(&1).and_then(unsigned_value))
+                        .zip(raw.get(&2).and_then(unsigned_value))
+                        .and_then(|((index, number), base_type)| {
+                            Some((
+                                u8::try_from(index).ok()?,
+                                u8::try_from(number).ok()?,
+                                u8::try_from(base_type).ok()?,
+                            ))
+                        })
+                } else {
+                    None
+                };
+                let has_timestamp = raw.contains_key(&253) || compressed_timestamp;
+                let has_start_time = raw.contains_key(&2);
+                let has_created_at = raw.contains_key(&4);
+                let has_total_distance = raw.contains_key(&9);
+                let has_compressed_speed_distance = raw.contains_key(&8);
                 let invalid_timestamp = message
                     .fields()
                     .get(&253)
@@ -137,18 +216,25 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
                 let record = processor
                     .decode_message(message)
                     .map_err(|error| map_parser_error(&error))?;
+                // fitparser appends developer values after profile fields, then a compressed timestamp.
+                let standard_count = record
+                    .fields()
+                    .len()
+                    .checked_sub(developer_count + usize::from(compressed_timestamp))
+                    .ok_or(ImportError::Corrupt)?;
+                let standard = &record.fields()[..standard_count];
                 match record.kind() {
+                    MesgNum::FieldDescription => {
+                        if let Some((index, number, base_type)) = developer_description {
+                            developer_widths.insert((index, number), base_type_width(base_type));
+                        }
+                    }
                     MesgNum::FileId => {
-                        file_type = field(&record, "type").and_then(numeric_enum);
-                        provenance.manufacturer_id =
-                            field(&record, "manufacturer").and_then(u16_value);
-                        provenance.product_id = record
-                            .fields()
-                            .iter()
-                            .find(|field| field.number() == 2)
-                            .and_then(u16_value);
-                        provenance.created_at_unix_ms = (!invalid_created_at)
-                            .then(|| field(&record, "time_created").and_then(timestamp_ms))
+                        file_type = raw_file_type;
+                        provenance.manufacturer_id = raw_manufacturer;
+                        provenance.product_id = raw_product;
+                        provenance.created_at_unix_ms = (has_created_at && !invalid_created_at)
+                            .then(|| standard_field(standard, 4, "").and_then(timestamp_ms))
                             .flatten();
                     }
                     MesgNum::Session => {
@@ -156,34 +242,50 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
                         if session_count > 1 {
                             return Err(ImportError::Unsupported);
                         }
-                        sport = match field(&record, "sport").and_then(numeric_enum) {
+                        sport = match raw_sport {
                             Some(1) => Sport::Running,
                             Some(_) => Sport::Other,
                             None => Sport::Unknown,
                         };
-                        session_start = (!invalid_session_start)
-                            .then(|| field(&record, "start_time").and_then(timestamp_ms))
+                        session_start = (has_start_time && !invalid_session_start)
+                            .then(|| standard_field(standard, 2, "").and_then(timestamp_ms))
                             .flatten();
-                        session_end = (!invalid_timestamp)
-                            .then(|| field(&record, "timestamp").and_then(timestamp_ms))
+                        session_end = (has_timestamp && !invalid_timestamp)
+                            .then(|| standard_timestamp(standard, &record, compressed_timestamp))
                             .flatten();
-                        total_distance_m = field(&record, "total_distance").and_then(nonnegative);
+                        total_distance_m = has_total_distance
+                            .then(|| standard_field(standard, 9, "m").and_then(nonnegative))
+                            .flatten();
                     }
                     MesgNum::Record => {
                         if invalid_timestamp {
                             return Err(ImportError::Corrupt);
                         }
-                        let timestamp_unix_ms = field(&record, "timestamp")
-                            .and_then(timestamp_ms)
+                        let timestamp_unix_ms = has_timestamp
+                            .then(|| standard_timestamp(standard, &record, compressed_timestamp))
+                            .flatten()
                             .ok_or(ImportError::Corrupt)?;
-                        let speed_m_s = field(&record, "enhanced_speed")
-                            .and_then(nonnegative)
-                            .or_else(|| field(&record, "speed").and_then(nonnegative));
+                        let speed_m_s =
+                            raw_speed.map(|value| value as f64 / 1000.0).or_else(|| {
+                                has_compressed_speed_distance
+                                    .then(|| {
+                                        standard_field(standard, 73, "m/s")
+                                            .or_else(|| standard_field(standard, 6, "m/s"))
+                                            .and_then(nonnegative)
+                                    })
+                                    .flatten()
+                            });
+                        let distance_m =
+                            raw_distance.map(|value| value as f64 / 100.0).or_else(|| {
+                                has_compressed_speed_distance
+                                    .then(|| standard_field(standard, 5, "m").and_then(nonnegative))
+                                    .flatten()
+                            });
                         samples.push(ActivitySample {
                             timestamp_unix_ms,
-                            distance_m: field(&record, "distance").and_then(nonnegative),
+                            distance_m,
                             speed_m_s,
-                            heart_rate_bpm: field(&record, "heart_rate").and_then(u8_value),
+                            heart_rate_bpm: raw_heart_rate,
                         });
                     }
                     _ => {}
@@ -233,7 +335,7 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
     })
 }
 
-fn validate_envelope(bytes: &[u8]) -> Result<(), ImportError> {
+fn validate_envelope(bytes: &[u8]) -> Result<usize, ImportError> {
     if bytes.len() > MAX_FIT_BYTES {
         return Err(ImportError::TooLarge);
     }
@@ -269,7 +371,50 @@ fn validate_envelope(bytes: &[u8]) -> Result<(), ImportError> {
         }
         return Err(ImportError::Corrupt);
     }
-    Ok(())
+    Ok(expected - 2)
+}
+
+fn check_definition(data: &[u8]) -> Result<(u8, DefinitionLayout), ImportError> {
+    // fitparser 0.11.0 prints malformed standard widths and can overflow on malformed developer widths.
+    let header = *data.first().ok_or(ImportError::Corrupt)?;
+    let field_count = *data.get(5).ok_or(ImportError::Corrupt)? as usize;
+    let fields_end = 6 + field_count * 3;
+    let fields = data.get(6..fields_end).ok_or(ImportError::Corrupt)?;
+    let mut data_size = 1_usize;
+    for field in fields.as_chunks::<3>().0 {
+        let size = field[1];
+        if size % base_type_width(field[2]) != 0 {
+            return Err(ImportError::Corrupt);
+        }
+        data_size += usize::from(size);
+    }
+    let mut developer_fields = Vec::new();
+    if header & 0x20 != 0 {
+        let count = *data.get(fields_end).ok_or(ImportError::Corrupt)? as usize;
+        let start = fields_end + 1;
+        let end = start + count * 3;
+        let fields = data.get(start..end).ok_or(ImportError::Corrupt)?;
+        for field in fields.as_chunks::<3>().0 {
+            developer_fields.push((field[2], field[0], field[1]));
+            data_size += usize::from(field[1]);
+        }
+    }
+    Ok((
+        header & 0x0f,
+        DefinitionLayout {
+            data_size,
+            developer_fields,
+        },
+    ))
+}
+
+fn base_type_width(base_type: u8) -> u8 {
+    match base_type & 0x9f {
+        0x83 | 0x84 | 0x8b => 2,
+        0x85 | 0x86 | 0x88 | 0x8c => 4,
+        0x89 | 0x8e | 0x8f | 0x90 => 8,
+        _ => 1,
+    }
 }
 
 fn map_parser_error(error: &ErrorKind) -> ImportError {
@@ -279,13 +424,70 @@ fn map_parser_error(error: &ErrorKind) -> ImportError {
     }
 }
 
-fn field<'a>(record: &'a FitDataRecord, name: &str) -> Option<&'a FitDataField> {
-    record.fields().iter().find(|value| value.name() == name)
+fn standard_field<'a>(
+    fields: &'a [FitDataField],
+    number: u8,
+    units: &str,
+) -> Option<&'a FitDataField> {
+    fields
+        .iter()
+        .find(|field| field.number() == number && field.units() == units)
 }
 
-fn numeric_enum(field: &FitDataField) -> Option<i64> {
-    match field.value() {
-        Value::SInt64(value) => Some(*value),
+fn standard_timestamp(
+    standard: &[FitDataField],
+    record: &FitDataRecord,
+    compressed: bool,
+) -> Option<i64> {
+    standard_field(standard, 253, "s")
+        .and_then(timestamp_ms)
+        .or_else(|| {
+            if compressed {
+                record
+                    .fields()
+                    .last()
+                    .filter(|field| field.number() == 253)
+                    .and_then(timestamp_ms)
+            } else {
+                None
+            }
+        })
+}
+
+fn unsigned_value(value: &Value) -> Option<u64> {
+    match value {
+        Value::Enum(value) | Value::UInt8(value) | Value::UInt8z(value) => Some(u64::from(*value)),
+        Value::UInt16(value) | Value::UInt16z(value) => Some(u64::from(*value)),
+        Value::UInt32(value) | Value::UInt32z(value) => Some(u64::from(*value)),
+        Value::UInt64(value) | Value::UInt64z(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn enum_value(value: &Value) -> Option<u8> {
+    match value {
+        Value::Enum(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn uint8_value(value: &Value) -> Option<u8> {
+    match value {
+        Value::UInt8(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn uint16_value(value: &Value) -> Option<u16> {
+    match value {
+        Value::UInt16(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn uint32_value(value: &Value) -> Option<u32> {
+    match value {
+        Value::UInt32(value) => Some(*value),
         _ => None,
     }
 }
@@ -309,19 +511,4 @@ fn nonnegative(field: &FitDataField) -> Option<f64> {
         .is_finite()
         .then_some(value)
         .filter(|value| *value >= 0.0)
-}
-
-fn u8_value(field: &FitDataField) -> Option<u8> {
-    match field.value() {
-        Value::UInt8(value) => Some(*value),
-        _ => None,
-    }
-}
-
-fn u16_value(field: &FitDataField) -> Option<u16> {
-    match field.value() {
-        Value::UInt16(value) => Some(*value),
-        Value::SInt64(value) => u16::try_from(*value).ok(),
-        _ => None,
-    }
 }
