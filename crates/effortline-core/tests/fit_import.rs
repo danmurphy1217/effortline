@@ -97,6 +97,20 @@ fn append_developer_description(
 }
 
 fn synthetic_fit(file_type: u8, optional_fields: bool, sample_count: usize) -> Vec<u8> {
+    synthetic_fit_with_session_end(
+        file_type,
+        optional_fields,
+        sample_count,
+        FIT_TIME + sample_count as u32,
+    )
+}
+
+fn synthetic_fit_with_session_end(
+    file_type: u8,
+    optional_fields: bool,
+    sample_count: usize,
+    session_end: u32,
+) -> Vec<u8> {
     let mut data = definition(0, 0, &[(0, 1, 0), (1, 2, 0x84), (2, 2, 0x84), (4, 4, 0x86)]);
     data.push(0);
     data.push(file_type);
@@ -113,7 +127,7 @@ fn synthetic_fit(file_type: u8, optional_fields: bool, sample_count: usize) -> V
     data.extend((FIT_TIME - 10).to_le_bytes());
     data.push(1); // running
     data.extend(100_000_u32.to_le_bytes()); // 1 km in 1/100 m
-    data.extend((FIT_TIME + sample_count as u32).to_le_bytes());
+    data.extend(session_end.to_le_bytes());
 
     let fields = if optional_fields {
         vec![(253, 4, 0x86), (5, 4, 0x86), (6, 2, 0x84), (3, 1, 0x02)]
@@ -168,6 +182,21 @@ fn imports_synthetic_running_activity_with_units_and_source_identity() {
     let last = changed.len() - 1;
     changed[last] ^= 1;
     assert_eq!(import_fit_activity(&changed), Err(ImportError::Corrupt));
+}
+
+#[test]
+fn extends_synthetic_session_end_to_include_later_samples() {
+    let bytes = synthetic_fit_with_session_end(4, true, 2, FIT_TIME);
+    let activity = import_fit_activity(&bytes).unwrap();
+    assert_eq!(activity.data.start_unix_ms, 1_699_999_990_000);
+    assert_eq!(activity.data.end_unix_ms, 1_700_000_001_000);
+    assert_eq!(activity.data.samples.len(), 2);
+
+    let reversed_session = synthetic_fit_with_session_end(4, true, 2, FIT_TIME - 11);
+    assert_eq!(
+        import_fit_activity(&reversed_session),
+        Err(ImportError::Corrupt)
+    );
 }
 
 #[test]
