@@ -10,16 +10,106 @@ body {
   margin: 0;
 }
 
-main {
+.app-shell {
   max-width: 42rem;
-  margin: 18vh auto 0;
+  margin: 9vh auto 3rem;
   padding: 0 2rem;
 }
 
+.eyebrow {
+  color: #9dc7ac;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
 h1 {
-  font-size: 2.5rem;
+  max-width: 32rem;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.12;
+}
+
+h2 {
+  margin-top: 0;
+  font-size: 1.2rem;
 }
 
 p {
   line-height: 1.5;
+}
+
+.intro {
+  max-width: 35rem;
+  color: #bed0c4;
+}
+
+button {
+  margin-top: 1rem;
+  padding: 0.8rem 1.2rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: #a9e9bd;
+  color: #10221d;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #c6f4d2;
+}
+
+button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+}
+
+button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.result {
+  min-height: 3rem;
+  margin-top: 2rem;
+}
+
+.summary {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+}
+
+.summary div {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 1rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid #325043;
+}
+
+.summary dt {
+  color: #b0c4b6;
+}
+
+.summary dd {
+  margin: 0;
+  font-weight: 650;
+}
+
+.save-note {
+  margin-top: 1.5rem;
+  color: #bed0c4;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 34rem) {
+  .app-shell {
+    margin-top: 3rem;
+  }
+
+  .summary div {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
 }

@@ -25,7 +25,7 @@ pnpm --dir apps/desktop format:check
 pnpm --dir apps/desktop build
 ```
 
-The core crate has synthetic FIT importer tests for valid data, missing fields, and bad input. These tests do not establish compatibility with real Garmin or COROS files. Desktop import is not available yet. The builder will also run a human end-to-end check before the first tester build.
+The core crate has synthetic FIT importer tests for valid data, missing fields, and bad input. These tests do not establish broad Garmin or COROS compatibility. The desktop app can preview one FIT file but cannot save it yet. A manual app check must cover the native picker, cancel, preview, and error messages before a tester build.
 
 ## Related
 
