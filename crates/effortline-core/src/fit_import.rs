@@ -1,6 +1,6 @@
 //! Provider-neutral import of one FIT activity from untrusted bytes.
 
-use fitparser::de::{FitObject, FitStreamProcessor};
+use fitparser::de::{DecodeOption, FitObject, FitStreamProcessor};
 use fitparser::profile::MesgNum;
 use fitparser::{ErrorKind, FitDataField, FitDataRecord, Value};
 use sha2::{Digest, Sha256};
@@ -101,6 +101,7 @@ struct DefinitionLayout {
 /// The same bytes always produce the same source identity; this function writes nothing.
 pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError> {
     let data_end = validate_envelope(bytes)?;
+    validate_data_crc(bytes, data_end)?;
 
     let mut processor = FitStreamProcessor::new();
     let mut definitions: [Option<DefinitionLayout>; 16] = std::array::from_fn(|_| None);
@@ -120,6 +121,7 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
 
     while !remaining.is_empty() {
         let offset = bytes.len() - remaining.len();
+        let mut normalized_definition = None;
         if offset >= usize::from(bytes[0]) && offset < data_end {
             let header = remaining[0];
             let data_remaining = data_end - offset;
@@ -128,8 +130,9 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
                 if definition_messages > MAX_FIT_DEFINITIONS {
                     return Err(ImportError::TooManyDefinitions);
                 }
-                let (local, layout) = check_definition(&remaining[..data_remaining])?;
+                let (local, layout, normalized) = check_definition(&remaining[..data_remaining])?;
                 definitions[usize::from(local)] = Some(layout);
+                normalized_definition = normalized;
             } else {
                 let local = if header & 0x80 != 0 {
                     (header >> 5) & 0x03
@@ -152,13 +155,24 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
                 }
             }
         }
-        let (next, object) = processor
-            .deserialize_next(remaining)
-            .map_err(|error| map_parser_error(&error))?;
-        if next.len() >= remaining.len() {
+        let (consumed, object) = if let Some(normalized) = normalized_definition.as_deref() {
+            // The original CRC was checked above. The parser sees the same short event field as
+            // bytes, but its running CRC now differs from the original stream.
+            processor.add_option(DecodeOption::SkipDataCrcValidation);
+            let (next, object) = processor
+                .deserialize_next(normalized)
+                .map_err(|error| map_parser_error(&error))?;
+            (normalized.len() - next.len(), object)
+        } else {
+            let (next, object) = processor
+                .deserialize_next(remaining)
+                .map_err(|error| map_parser_error(&error))?;
+            (remaining.len() - next.len(), object)
+        };
+        if consumed == 0 {
             return Err(ImportError::Corrupt);
         }
-        remaining = next;
+        remaining = &remaining[consumed..];
         match object {
             FitObject::Crc(_) => saw_crc = true,
             FitObject::Header(_) | FitObject::DefinitionMessage(_) => {}
@@ -374,38 +388,83 @@ fn validate_envelope(bytes: &[u8]) -> Result<usize, ImportError> {
     Ok(expected - 2)
 }
 
-fn check_definition(data: &[u8]) -> Result<(u8, DefinitionLayout), ImportError> {
+fn check_definition(data: &[u8]) -> Result<(u8, DefinitionLayout, Option<Vec<u8>>), ImportError> {
     // fitparser 0.11.0 prints malformed standard widths and can overflow on malformed developer widths.
     let header = *data.first().ok_or(ImportError::Corrupt)?;
     let field_count = *data.get(5).ok_or(ImportError::Corrupt)? as usize;
+    let global_message = match data[2] {
+        0 => u16::from_le_bytes([data[3], data[4]]),
+        1 => u16::from_be_bytes([data[3], data[4]]),
+        _ => return Err(ImportError::Corrupt),
+    };
     let fields_end = 6 + field_count * 3;
     let fields = data.get(6..fields_end).ok_or(ImportError::Corrupt)?;
     let mut data_size = 1_usize;
-    for field in fields.as_chunks::<3>().0 {
+    let mut short_event_type_offsets = Vec::new();
+    for (index, field) in fields.as_chunks::<3>().0.iter().enumerate() {
         let size = field[1];
-        if size % base_type_width(field[2]) != 0 {
+        // Some event messages encode field 3 in one byte despite declaring uint32.
+        let short_event_data =
+            global_message == 21 && field[0] == 3 && size == 1 && field[2] == 0x86;
+        if size % base_type_width(field[2]) != 0 && !short_event_data {
             return Err(ImportError::Corrupt);
+        }
+        if short_event_data {
+            short_event_type_offsets.push(6 + index * 3 + 2);
         }
         data_size += usize::from(size);
     }
     let mut developer_fields = Vec::new();
+    let mut definition_end = fields_end;
     if header & 0x20 != 0 {
         let count = *data.get(fields_end).ok_or(ImportError::Corrupt)? as usize;
         let start = fields_end + 1;
         let end = start + count * 3;
+        definition_end = end;
         let fields = data.get(start..end).ok_or(ImportError::Corrupt)?;
         for field in fields.as_chunks::<3>().0 {
             developer_fields.push((field[2], field[0], field[1]));
             data_size += usize::from(field[1]);
         }
     }
+    let normalized = if short_event_type_offsets.is_empty() {
+        None
+    } else {
+        let mut definition = data[..definition_end].to_vec();
+        for offset in short_event_type_offsets {
+            definition[offset] = 0x0d; // fitparser's own fallback type for this short field.
+        }
+        Some(definition)
+    };
     Ok((
         header & 0x0f,
         DefinitionLayout {
             data_size,
             developer_fields,
         },
+        normalized,
     ))
+}
+
+fn validate_data_crc(bytes: &[u8], data_end: usize) -> Result<(), ImportError> {
+    let data = if bytes[0] == 14 {
+        &bytes[14..data_end]
+    } else {
+        &bytes[..data_end]
+    };
+    let expected = u16::from_le_bytes([bytes[data_end], bytes[data_end + 1]]);
+    let mut crc = 0_u16;
+    for byte in data {
+        crc ^= u16::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 == 1 {
+                (crc >> 1) ^ 0xA001
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    (crc == expected).then_some(()).ok_or(ImportError::Corrupt)
 }
 
 fn base_type_width(base_type: u8) -> u8 {

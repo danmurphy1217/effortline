@@ -364,6 +364,25 @@ fn rejects_synthetic_malformed_standard_definition_before_decode() {
 }
 
 #[test]
+fn accepts_synthetic_short_event_data_field_without_changing_activity_measures() {
+    let mut data = activity_data();
+    data.extend(definition(3, 21, &[(3, 1, 0x86)]));
+    data.extend([3, 1]);
+
+    let bytes = fit_file(&data, 12);
+    let activity = import_fit_activity(&bytes).unwrap();
+    assert_eq!(activity.data.sport, Sport::Running);
+    assert_eq!(activity.data.total_distance_m, Some(1000.0));
+    assert_eq!(activity.data.samples.len(), 1);
+    assert_eq!(activity.data.samples[0].speed_m_s, Some(3.0));
+    assert_eq!(activity.data.samples[0].distance_m, Some(0.0));
+
+    let mut bad_crc = bytes;
+    *bad_crc.last_mut().unwrap() ^= 1;
+    assert_eq!(import_fit_activity(&bad_crc), Err(ImportError::Corrupt));
+}
+
+#[test]
 fn rejects_synthetic_malformed_developer_size_without_panicking() {
     let mut data = activity_data();
     append_developer_description(&mut data, 7, 0x84, "vendor_metric", "mph");
