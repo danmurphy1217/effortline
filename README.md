@@ -2,7 +2,7 @@
 
 Effortline is a free, local-first desktop app for understanding endurance training history. It will use a local model to ask useful questions, but code will calculate the numbers and link each claim to source activities. There is no feed, account, subscription, or remote inference service.
 
-This repository is at the **M0 foundation stage**. The desktop shell and portable Rust core exist. FIT import, encrypted storage, investigations, and backup are not implemented yet. Do not put personal activity files in this repository.
+The desktop shell and portable Rust core exist. The core now imports FIT activity bytes and has synthetic importer tests. Desktop import, encrypted storage, investigations, and backup are not available yet. Do not put personal activity files in this repository.
 
 ## First product slice
 
@@ -19,7 +19,7 @@ pnpm --dir apps/desktop check
 pnpm --dir apps/desktop tauri dev
 ```
 
-`cargo test -p effortline-core` currently checks only that the empty core crate builds. It does not test product behavior yet.
+`cargo test -p effortline-core` runs the core FIT importer tests. These synthetic tests do not establish compatibility with real Garmin or COROS files. The desktop app cannot import files yet.
 
 Before a code change, run the relevant checks:
 
