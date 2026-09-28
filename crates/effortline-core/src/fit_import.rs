@@ -76,7 +76,8 @@ pub struct ActivitySample {
     pub heart_rate_bpm: Option<u8>,
 }
 
-/// Imported source facts. Speed is observed FIT speed, not a derived pace.
+/// Imported source facts. The time range encloses all samples and any wider session bounds.
+/// Speed is observed FIT speed, not a derived pace.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActivityData {
     pub sport: Sport,
@@ -322,15 +323,17 @@ pub fn import_fit_activity(bytes: &[u8]) -> Result<ImportedActivity, ImportError
         .last()
         .ok_or(ImportError::NotActivity)?
         .timestamp_unix_ms;
-    let start_unix_ms = session_start.unwrap_or(first);
-    let end_unix_ms = session_end.unwrap_or(last);
-    if end_unix_ms < start_unix_ms
+    if session_start
+        .zip(session_end)
+        .is_some_and(|(start, end)| end < start)
         || samples
             .windows(2)
             .any(|pair| pair[1].timestamp_unix_ms < pair[0].timestamp_unix_ms)
     {
         return Err(ImportError::Corrupt);
     }
+    let start_unix_ms = session_start.map_or(first, |start| start.min(first));
+    let end_unix_ms = session_end.map_or(last, |end| end.max(last));
 
     Ok(ImportedActivity {
         source: ActivitySource {
