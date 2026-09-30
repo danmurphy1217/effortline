@@ -42,3 +42,11 @@ pnpm --dir apps/desktop build
 - [Agent instructions](AGENTS.md)
 
 Effortline is licensed under [GNU GPLv3](LICENSE). Contributions must keep private data, secrets, and personal exports out of the repository.
+
+## Local diagnostic logs
+
+Effortline keeps diagnostic logs on your device to help investigate errors and slow saves. On macOS, open `~/Library/Logs/com.danmurphy.effortline/` in Finder using **Go → Go to Folder**. The files are `diagnostics.jsonl` and `diagnostics.previous.jsonl`, each limited to 1 MiB.
+
+Logs include app version, platform, event times, operation IDs, save-stage timings, sample counts, and error codes. They do not contain activity contents, filenames, routes, or keys. Nothing is uploaded. Review logs before you choose to share them. To clear them, quit Effortline and delete only those two diagnostic files. This does not remove library data. Logs are best effort and may omit records if the disk is unavailable or the app stops suddenly.
+
+After its first successful save, the library stays unlocked in memory until the app quits or a save fails. Later saves reuse that session. Fully quit the app before testing a Keychain permission change.

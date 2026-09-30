@@ -45,3 +45,15 @@ The library lives in the app's local data directory under `library/`. The macOS 
 The macOS-only [`security-framework`](https://docs.rs/security-framework/3.7.0/security_framework/) dependency provides native Keychain calls under MIT or Apache-2.0. Default features are disabled. This avoids custom unsafe OS bindings and adds no network access. Keychain reads and writes are confined to the desktop adapter. The linked system framework adds no separately bundled runtime. Core encryption and SQLCipher dependencies remain platform-neutral; cross-platform storage and signed-app Keychain behavior still require release validation.
 
 Save progress uses a versioned Tauri channel. The core reports fixed storage stages and elapsed durations through a callback; it has no UI or OS dependency. Tauri maps secret access to the Keychain stage. Progress carries no activity bytes, paths, or secret values. A closed progress channel does not abort an in-flight durable save. Only the final command response marks the UI as saved.
+
+### Library session and recovery
+
+Tauri retains one `ActivityLibrary` behind a mutex after the first successful save. It holds the core's exclusive library lock for that session. Subsequent saves reuse the connection and derived encryption keys; they do not reload Keychain or repeat the full object recovery scan. The core still owns recovery. A failed import drops the connection and lock, so the next attempt opens and recovers again. Every new app process also opens and recovers before writing. There is no persistent flag that skips recovery after a crash. File sync and database commit ordering are unchanged.
+
+The library remains unlocked until the app fully quits or a save fails. Locking Keychain after the first unlock does not revoke this in-memory library session. Quit the app before testing Keychain denial, moving the library, or changing its key. A second app process cannot open the same locked library.
+
+### Local diagnostics
+
+The desktop shell owns device-local diagnostics. Startup, preview results, save stages, sample counts, elapsed durations, library reuse, and stable error codes use a typed allowlist. Logs never accept arbitrary strings from imported files or raw error messages. They exclude activity contents, filenames, paths, source hashes, notes, routes, and secrets. The portable core only emits progress through its callback.
+
+Logs stay on the device. There is no telemetry SDK, upload, remote endpoint, or stable user identifier. Sharing a log is an explicit user action outside this save slice. A bounded background queue decouples log writes from the UI and storage. Rotation retains two files up to 1 MiB each; a separate lock serializes log writes across processes. On macOS, the log directory is mode 0700 and files are mode 0600. These are plaintext diagnostics, not encrypted activity records. Queue drops are counted in the next record. Disk errors stop the logger and emit a fixed stderr message without failing a save. Abrupt process exit can lose queued records; this is a diagnostic aid, not an audit journal.

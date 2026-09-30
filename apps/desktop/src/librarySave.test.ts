@@ -73,6 +73,30 @@ void test("rendered completed states replace the save action and active progress
     const { SaveAction } = (await server.ssrLoadModule(
       "/src/App.tsx",
     )) as typeof import("./App");
+    for (const completed of [1024, 8192, 16705]) {
+      const html = renderToStaticMarkup(
+        createElement(SaveAction, {
+          saving: true,
+          busy: false,
+          saveResponse: null,
+          progress: {
+            version: 1,
+            status: "samples_written",
+            completed,
+            total: 16705,
+            elapsed_ms: 250,
+          },
+          elapsedSeconds: 2,
+          onSave: () => {},
+        }),
+      );
+      assert.match(html, /role="status"/);
+      assert.ok(
+        html.includes(`${completed.toLocaleString()} of 16,705 written`),
+      );
+      assert.match(html, /Not yet committed/);
+      assert.doesNotMatch(html, /Saved to library|save-complete|%/);
+    }
     for (const [status, heading] of [
       ["saved", "Saved to library"],
       ["already_present", "Already in your library"],

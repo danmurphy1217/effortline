@@ -32,6 +32,13 @@ export type SaveStage =
   | "database_commit";
 
 export type SaveProgress =
+  | {
+      version: 1;
+      status: "samples_written";
+      completed: number;
+      total: number;
+      elapsed_ms: number;
+    }
   | { version: 1; status: "started"; stage: SaveStage }
   | {
       version: 1;
@@ -57,6 +64,12 @@ export function saveProgressMessage(
   elapsedSeconds: number,
 ): string {
   if (!progress) return "Starting the save…";
+  if (progress.status === "samples_written") {
+    const elapsed = Math.floor(
+      progress.elapsed_ms / 1000 + Math.max(0, elapsedSeconds),
+    );
+    return `Saving activity samples — ${progress.completed.toLocaleString()} of ${progress.total.toLocaleString()} written (${elapsed} s). Not yet committed to your library.`;
+  }
   if (progress.status === "finished") {
     return progress.succeeded
       ? `${stageMessages[progress.stage]} completed. Waiting for the next save result.`

@@ -1,3 +1,4 @@
+use crate::diagnostics::{Diagnostics, Event};
 use crate::fit_preview::{PendingPreview, PreviewState};
 use crate::library_secret::KeychainSecret;
 use effortline_core::library::{
@@ -6,6 +7,10 @@ use effortline_core::library::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Mutex;
+
+#[derive(Default)]
+pub(super) struct LibraryState(pub Mutex<Option<ActivityLibrary>>);
 use tauri::{ipc::Channel, Manager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -39,6 +44,12 @@ impl From<LibraryStage> for SaveStage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum SaveProgress {
+    SamplesWritten {
+        version: u8,
+        completed: usize,
+        total: usize,
+        elapsed_ms: f64,
+    },
     Started {
         version: u8,
         stage: SaveStage,
@@ -54,6 +65,16 @@ pub(super) enum SaveProgress {
 impl From<LibraryProgress> for SaveProgress {
     fn from(event: LibraryProgress) -> Self {
         match event {
+            LibraryProgress::SamplesWritten {
+                completed,
+                total,
+                elapsed,
+            } => Self::SamplesWritten {
+                version: 1,
+                completed,
+                total,
+                elapsed_ms: elapsed.as_secs_f64() * 1000.0,
+            },
             LibraryProgress::Started(stage) => Self::Started {
                 version: 1,
                 stage: stage.into(),
@@ -79,7 +100,7 @@ pub(super) struct SaveRequest {
     preview_id: String,
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum SaveResponse {
     Saved { version: u8 },
@@ -87,7 +108,7 @@ pub(super) enum SaveResponse {
     Error { version: u8, code: SaveError },
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum SaveError {
     UnsupportedRequest,
@@ -137,7 +158,12 @@ pub(super) async fn save_preview_to_library(
     request: SaveRequest,
     on_progress: Channel<SaveProgress>,
 ) -> SaveResponse {
-    tauri::async_runtime::spawn_blocking(move || {
+    let diagnostics = app.state::<Diagnostics>();
+    let (operation, started) = diagnostics.begin(Event::SaveStarted);
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let app = worker_app;
+        let diagnostics = app.state::<Diagnostics>();
         let state = app.state::<PreviewState>();
         let Ok(pending) = state.0.try_lock() else {
             return SaveResponse::error(SaveError::LibraryBusy);
@@ -151,7 +177,15 @@ pub(super) async fn save_preview_to_library(
             service: "com.danmurphy.effortline.library.v1",
             account: "primary",
         };
-        save_pending_preview_with_progress(
+        let library_state = app.state::<LibraryState>();
+        let Ok(mut library) = library_state.0.try_lock() else {
+            return SaveResponse::error(SaveError::LibraryBusy);
+        };
+        if library.is_some() {
+            diagnostics.record(operation, Event::LibraryReused);
+        }
+        save_in_session(
+            &mut library,
             pending.as_ref(),
             &request,
             &directory,
@@ -159,11 +193,25 @@ pub(super) async fn save_preview_to_library(
             &mut |event| {
                 // A closed UI must not abort an in-flight durable write.
                 let _ = on_progress.send(SaveProgress::from(event));
+                diagnostics.record(
+                    operation,
+                    Event::SaveProgress {
+                        progress: event.into(),
+                    },
+                );
             },
         )
     })
     .await
-    .unwrap_or_else(|_| SaveResponse::error(SaveError::SaveFailed))
+    .unwrap_or_else(|_| SaveResponse::error(SaveError::SaveFailed));
+    diagnostics.record(
+        operation,
+        Event::SaveFinished {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            result: result.clone(),
+        },
+    );
+    result
 }
 
 #[cfg(test)]
@@ -176,7 +224,19 @@ fn save_pending_preview(
     save_pending_preview_with_progress(pending, request, directory, provider, &mut |_| {})
 }
 
+#[cfg(test)]
 fn save_pending_preview_with_progress(
+    pending: Option<&PendingPreview>,
+    request: &SaveRequest,
+    directory: &Path,
+    provider: &impl LibrarySecretProvider,
+    report: &mut impl FnMut(LibraryProgress),
+) -> SaveResponse {
+    save_in_session(&mut None, pending, request, directory, provider, report)
+}
+
+fn save_in_session(
+    session: &mut Option<ActivityLibrary>,
     pending: Option<&PendingPreview>,
     request: &SaveRequest,
     directory: &Path,
@@ -189,16 +249,32 @@ fn save_pending_preview_with_progress(
     let Some(pending) = pending.filter(|preview| preview.id == request.preview_id) else {
         return SaveResponse::error(SaveError::PreviewExpired);
     };
-    match ActivityLibrary::open_with_progress(directory, provider, report)
-        .and_then(|mut library| library.import_fit_bytes_with_progress(&pending.bytes, report))
-    {
-        Ok(result) => match result.status {
-            ImportStatus::Saved => SaveResponse::Saved { version: 1 },
-            ImportStatus::AlreadyPresent => SaveResponse::AlreadyPresent { version: 1 },
-        },
+    if session.is_none() {
+        match ActivityLibrary::open_with_progress(directory, provider, report) {
+            Ok(library) => *session = Some(library),
+            Err(error) => return SaveResponse::error(error.into()),
+        }
+    }
+    // Take ownership during the operation. Any failed write drops the connection and lock;
+    // the next attempt must open and recover before writing again.
+    let Some(mut library) = session.take() else {
+        return SaveResponse::error(SaveError::SaveFailed);
+    };
+    match library.import_fit_bytes_with_progress(&pending.bytes, report) {
+        Ok(result) => {
+            *session = Some(library);
+            match result.status {
+                ImportStatus::Saved => SaveResponse::Saved { version: 1 },
+                ImportStatus::AlreadyPresent => SaveResponse::AlreadyPresent { version: 1 },
+            }
+        }
         Err(error) => SaveResponse::error(error.into()),
     }
 }
+
+#[cfg(test)]
+#[path = "../../../../crates/effortline-core/tests/support/mod.rs"]
+mod synthetic_support;
 
 #[cfg(test)]
 mod tests {
@@ -375,6 +451,172 @@ mod tests {
         assert_eq!(finished["succeeded"], false);
         assert!(receive.try_recv().is_err());
         assert!(!directory.path().join("library").exists());
+    }
+
+    #[test]
+    fn repeated_saves_reuse_prepopulated_library_and_recover_after_failure_or_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library");
+        let mut initial = ActivityLibrary::open(&path, &TestSecret).unwrap();
+        for count in 1..=64 {
+            initial
+                .import_fit_bytes(&synthetic_support::synthetic_fit(4, true, count))
+                .unwrap();
+        }
+        drop(initial);
+        let mut session = None;
+        let mut events = Vec::new();
+        let (pending, request) = preview(&synthetic_support::synthetic_fit(4, true, 65));
+        assert_eq!(
+            save_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &TestSecret,
+                &mut |event| events.push(event)
+            ),
+            SaveResponse::Saved { version: 1 }
+        );
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, LibraryProgress::Started(LibraryStage::OpenRecovery))));
+        struct MustNotLoad;
+        impl LibrarySecretProvider for MustNotLoad {
+            fn load_secret(&self) -> Result<LibrarySecret, SecretUnavailable> {
+                panic!("session must reuse its open library");
+            }
+        }
+        events.clear();
+        let (pending, request) = preview(&synthetic_support::synthetic_fit(4, true, 66));
+        assert_eq!(
+            save_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &MustNotLoad,
+                &mut |event| events.push(event)
+            ),
+            SaveResponse::Saved { version: 1 }
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            LibraryProgress::Started(LibraryStage::SecretAccess | LibraryStage::OpenRecovery)
+        )));
+        assert_eq!(
+            session.as_ref().unwrap().list_activity_ids().unwrap().len(),
+            66
+        );
+        assert!(matches!(
+            ActivityLibrary::open(&path, &TestSecret),
+            Err(LibraryError::Busy)
+        ));
+        assert_eq!(
+            save_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &MustNotLoad,
+                &mut |_| {}
+            ),
+            SaveResponse::AlreadyPresent { version: 1 }
+        );
+
+        // An error invalidates the session. Next open must clean interrupted writes.
+        let broken = PendingPreview {
+            id: request.preview_id.clone(),
+            bytes: b"synthetic invalid".to_vec().into(),
+        };
+        assert_eq!(
+            save_in_session(
+                &mut session,
+                Some(&broken),
+                &request,
+                &path,
+                &MustNotLoad,
+                &mut |_| {}
+            ),
+            SaveResponse::error(SaveError::InvalidPreview)
+        );
+        assert!(session.is_none());
+        for restart in [false, true] {
+            if restart {
+                drop(session.take());
+            }
+            let orphan = path.join("objects/00000000000000000000000000000000.fitenc");
+            std::fs::write(&orphan, b"synthetic interrupted write").unwrap();
+            events.clear();
+            assert_eq!(
+                save_in_session(
+                    &mut session,
+                    pending.as_ref(),
+                    &request,
+                    &path,
+                    &TestSecret,
+                    &mut |event| events.push(event)
+                ),
+                SaveResponse::AlreadyPresent { version: 1 }
+            );
+            assert!(events.iter().any(|event| matches!(
+                event,
+                LibraryProgress::Started(LibraryStage::OpenRecovery)
+            )));
+            assert!(!orphan.exists());
+            assert_eq!(
+                session.as_ref().unwrap().list_activity_ids().unwrap().len(),
+                66
+            );
+        }
+    }
+
+    #[test]
+    fn large_save_reports_uncommitted_rows_while_persistence_is_running() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library");
+        let (pending, request) = preview(&synthetic_support::synthetic_fit(4, true, 16_705));
+        let (send, receive) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut samples = Vec::new();
+            let mut session = None;
+            let result = save_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &TestSecret,
+                &mut |event| {
+                    if let LibraryProgress::SamplesWritten {
+                        completed, total, ..
+                    } = event
+                    {
+                        samples.push(completed);
+                        assert_eq!(total, 16_705);
+                        if completed == 1024 {
+                            send.send(serde_json::to_value(SaveProgress::from(event)).unwrap())
+                                .unwrap();
+                            // Handshake, not a timing assertion: hold real persistence between chunks.
+                            wait.recv_timeout(Duration::from_secs(60)).unwrap();
+                        }
+                    }
+                },
+            );
+            assert_eq!(result, SaveResponse::Saved { version: 1 });
+            assert_eq!(samples.last(), Some(&16_705));
+            assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(samples.len() <= 101);
+        });
+        let progress = receive.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert_eq!(progress["status"], "samples_written");
+        assert_eq!(progress["completed"], 1024);
+        assert_eq!(progress["total"], 16_705);
+        assert!(!worker.is_finished());
+        release.send(()).unwrap();
+        worker.join().unwrap();
     }
 
     #[cfg(target_os = "macos")]

@@ -97,3 +97,35 @@ These single-run measurements are diagnostic, not performance guarantees. A larg
 Regression checks cover progress arriving before secret access returns, no commit event after a failed parse, retry state, and the rendered saved/duplicate UI with no save button or active progress. The workspace run passed 31 tests (two opt-in tests excluded); the core-only run passed 23; five frontend tests passed. The live Keychain test and timing benchmark passed when run explicitly. Rust format and both lint commands, frontend type/lint/format/build checks, and the packaged debug build passed. The updated Apple Development-signed app displayed the Keychain wait stage and then the checkmarked duplicate panel without a Save button. Native Deny/retry and Developer ID/notarization remain unverified as described above.
 
 The 1,121-sample native reproduction fixture has SHA-256 `375a0395818683c6690dc4451edd174ce1af31759f17897b965fff36013c413c`. It and raw local diagnostics stay outside Git. No library data were deleted. The mixed app library must not be reset to remove these fixtures.
+
+## Larger saves, session reuse, and local diagnostics
+
+Run `cargo test -p effortline-core --locked synthetic_large_save_stage_timings -- --nocapture` for a generated 16,705-sample FIT (200,552 bytes), followed by a distinct 16,706-sample FIT (200,564 bytes). The test pre-populates a temporary library with 64 synthetic activities. It checks saved samples and reopen behavior without any wall-clock pass/fail threshold. All fixtures come from the shared synthetic builder.
+
+A debug baseline before session reuse measured open/recovery at 9.148 ms, FIT parsing 149.429 ms, duplicate check 0.076 ms, encryption 25.420 ms, file write/sync 8.031 ms, sample inserts 36.029 ms, and commit 4.922 ms. This benchmark used an in-memory test secret, not Keychain.
+
+The updated Apple Development-signed app saved both generated files. Its new local diagnostic log recorded:
+
+| Stage | First save, 16,705 samples (ms) | Reused session, 16,706 samples (ms) |
+| --- | ---: | ---: |
+| Keychain access | 22.961 | Not run |
+| Library open/recovery | 19.992 | Not run |
+| FIT parsing | 157.304 | 151.370 |
+| Duplicate check | 0.105 | 0.258 |
+| Encryption | 25.369 | 25.449 |
+| File write/sync | 9.607 | 28.342 |
+| Sample inserts | 35.388 | 39.701 |
+| Database commit | 4.272 | 4.650 |
+| Save command total | 275.450 | 250.113 |
+
+The first save recorded 17 sample-count events before commit. The second recorded `library_reused` and no Keychain/open/recovery stages. Both native windows reached **Saved to library**. These are observations on this Mac, not performance guarantees. The native sample stage finished too quickly to inspect each intermediate count visually. A deterministic worker handshake test holds actual persistence after 1,024 rows, confirms the typed progress event arrives before completion, then permits the save to finish. Render tests verify visible uncommitted row counts at 1,024, 8,192, and 16,705 rows. The final row count still says **Not yet committed**; only the command result confirms success.
+
+The partial-write failure test aborts SQLCipher inserts after 1,024 rows. It verifies emitted counts, failed sample persistence, no commit stage, rollback, and successful recovery/retry. A desktop session test saves into a pre-populated library, verifies no new secret/open stage on repeat saves, rejects a competing open, and checks recovery after failure and a simulated restart. Existing interrupted-write tests remain in place. This does not prove recovery from physical power loss.
+
+Four read-only review scopes covered correctness, security, scalability, and tests. Two P2 findings were valid and resolved: log rotation now holds a separate cross-process lock, and the existing sample failure test now covers progress before rollback. Queue overflow, closed logging channels, disk errors, concurrent log writers, size bounds, JSON parsing, and macOS file permissions have regression coverage.
+
+Neither sample persistence nor opening this library reproduced a multi-minute save. The repeated recovery work was real and is now removed within a healthy app session; these measurements do not establish it as the cause of the original delay. The earlier completed-button wait cursor was fixed separately. Slow disks, very large libraries at first open, long permission waits, native Deny/retry, and the original multi-minute incident remain unverified. Fully quit before a Keychain Deny test because the new session retains the unlocked connection.
+
+The native synthetic files and diagnostic logs remain outside Git. No library data were deleted. The app library contains both synthetic and other activities; do not reset it to remove these fixtures. Log cleanup is separate: quit the app and remove only `diagnostics.jsonl` and `diagnostics.previous.jsonl` under `~/Library/Logs/com.danmurphy.effortline/`.
+
+Local checks for this follow-up passed: 38 workspace tests (two opt-in tests excluded), 24 core tests, the opt-in live Keychain test, five frontend tests, both Rust lint commands, Rust format, frontend type/lint/format/build checks, packaged debug build, and Apple Development signature verification. Native large-save and same-session repeated-save checks passed. CI results for this revision are tracked on PR #5.

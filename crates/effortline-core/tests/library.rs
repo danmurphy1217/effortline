@@ -167,14 +167,36 @@ fn failed_sample_write_rolls_back_activity_and_allows_retry_after_recovery() {
     let directory = tempdir().unwrap();
     drop(ActivityLibrary::open(directory.path(), &TestSecret(1)).unwrap());
     let database = open_test_database(directory.path());
-    database.execute_batch("CREATE TRIGGER fail_sample BEFORE INSERT ON samples BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER fail_sample BEFORE INSERT ON samples WHEN NEW.sample_index = 1024 BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;").unwrap();
     drop(database);
-    let bytes = support::synthetic_fit(4, true, 2);
+    let bytes = support::synthetic_fit(4, true, 16_705);
     let mut library = ActivityLibrary::open(directory.path(), &TestSecret(1)).unwrap();
+    use effortline_core::library::{LibraryProgress, LibraryStage};
+    let mut events = Vec::new();
     assert!(matches!(
-        library.import_fit_bytes(&bytes),
+        library.import_fit_bytes_with_progress(&bytes, &mut |event| events.push(event)),
         Err(LibraryError::Database(_))
     ));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        LibraryProgress::SamplesWritten {
+            completed: 1024,
+            total: 16_705,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        LibraryProgress::Finished {
+            stage: LibraryStage::SampleInserts,
+            succeeded: false,
+            ..
+        }
+    )));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        LibraryProgress::Started(LibraryStage::DatabaseCommit)
+    )));
     assert!(library.list_activity_ids().unwrap().is_empty());
     drop(library);
     let database = open_test_database(directory.path());
@@ -279,7 +301,12 @@ fn progress_tracks_real_stages_and_never_reports_commit_after_failure() {
             LibraryStage::DatabaseCommit
         ]
     );
-    for pair in events.as_chunks::<2>().0 {
+    let boundaries: Vec<_> = events
+        .iter()
+        .copied()
+        .filter(|event| !matches!(event, LibraryProgress::SamplesWritten { .. }))
+        .collect();
+    for pair in boundaries.as_chunks::<2>().0 {
         assert!(
             matches!(pair, [LibraryProgress::Started(a), LibraryProgress::Finished { stage: b, succeeded: true, .. }] if a == b)
         );
@@ -299,4 +326,71 @@ fn progress_tracks_real_stages_and_never_reports_commit_after_failure() {
             }
         ]
     ));
+}
+
+#[test]
+fn synthetic_large_save_stage_timings() {
+    use effortline_core::library::LibraryProgress;
+    let directory = tempdir().unwrap();
+    let mut initial = ActivityLibrary::open(directory.path(), &TestSecret(1)).unwrap();
+    for count in 1..=64 {
+        initial
+            .import_fit_bytes(&support::synthetic_fit(4, true, count))
+            .unwrap();
+    }
+    drop(initial);
+    let mut report = |event| {
+        if let LibraryProgress::Finished {
+            stage,
+            elapsed,
+            succeeded,
+        } = event
+        {
+            println!(
+                "synthetic stage={stage:?} elapsed_ms={:.3} succeeded={succeeded}",
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
+    };
+    println!("synthetic mode=cold_open prepopulated_activities=64");
+    let mut library =
+        ActivityLibrary::open_with_progress(directory.path(), &TestSecret(1), &mut report).unwrap();
+    for count in [16_705, 16_706] {
+        let bytes = support::synthetic_fit(4, true, count);
+        println!(
+            "synthetic samples={count} bytes={} reuse={}",
+            bytes.len(),
+            count == 16_706
+        );
+        let mut written = Vec::new();
+        let saved = library
+            .import_fit_bytes_with_progress(&bytes, &mut |event| {
+                report(event);
+                if let LibraryProgress::SamplesWritten {
+                    completed, total, ..
+                } = event
+                {
+                    assert_eq!(total, count);
+                    written.push(completed);
+                }
+            })
+            .unwrap();
+        assert_eq!(saved.status, ImportStatus::Saved);
+        assert_eq!(written.last(), Some(&count));
+        assert!(written.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(
+            library
+                .find_activity(&saved.identity)
+                .unwrap()
+                .unwrap()
+                .data
+                .samples
+                .len(),
+            count
+        );
+    }
+    assert_eq!(library.list_activity_ids().unwrap().len(), 66);
+    drop(library);
+    let library = ActivityLibrary::open(directory.path(), &TestSecret(1)).unwrap();
+    assert_eq!(library.list_activity_ids().unwrap().len(), 66);
 }

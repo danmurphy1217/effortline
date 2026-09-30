@@ -38,6 +38,12 @@ pub enum LibraryStage {
 /// Durations describe completed work, including failed stages. They contain no athlete data.
 #[derive(Debug, Clone, Copy)]
 pub enum LibraryProgress {
+    /// Inserted rows are still uncommitted. This does not mean the activity is saved.
+    SamplesWritten {
+        completed: usize,
+        total: usize,
+        elapsed: Duration,
+    },
     Started(LibraryStage),
     Finished {
         stage: LibraryStage,
@@ -49,11 +55,11 @@ pub enum LibraryProgress {
 fn measure<T>(
     stage: LibraryStage,
     report: &mut impl FnMut(LibraryProgress),
-    work: impl FnOnce() -> Result<T, LibraryError>,
+    work: impl FnOnce(&mut dyn FnMut(LibraryProgress)) -> Result<T, LibraryError>,
 ) -> Result<T, LibraryError> {
     report(LibraryProgress::Started(stage));
     let start = Instant::now();
-    let result = work();
+    let result = work(report);
     report(LibraryProgress::Finished {
         stage,
         elapsed: start.elapsed(),
@@ -163,12 +169,12 @@ impl ActivityLibrary {
         provider: &impl LibrarySecretProvider,
         report: &mut impl FnMut(LibraryProgress),
     ) -> Result<Self, LibraryError> {
-        let secret = measure(LibraryStage::SecretAccess, report, || {
+        let secret = measure(LibraryStage::SecretAccess, report, |_| {
             provider
                 .load_secret()
                 .map_err(|_| LibraryError::SecretUnavailable)
         })?;
-        measure(LibraryStage::OpenRecovery, report, || {
+        measure(LibraryStage::OpenRecovery, report, |_| {
             let database_key = derive_key(&secret.0, b"effortline/sqlcipher/v1")?;
             let object_key = derive_key(&secret.0, b"effortline/objects/v1")?;
             let directory = directory.as_ref();
@@ -233,11 +239,11 @@ impl ActivityLibrary {
         bytes: &[u8],
         report: &mut impl FnMut(LibraryProgress),
     ) -> Result<ImportResult, LibraryError> {
-        let activity = measure(LibraryStage::FitParsing, report, || {
+        let activity = measure(LibraryStage::FitParsing, report, |_| {
             Ok(import_fit_activity(bytes)?)
         })?;
         let identity = activity.source.identity.clone();
-        let present = measure(LibraryStage::DuplicateCheck, report, || {
+        let present = measure(LibraryStage::DuplicateCheck, report, |_| {
             if self.find_activity(&identity)?.is_some() {
                 self.read_original_bytes(&identity)?;
                 Ok(true)
@@ -255,10 +261,10 @@ impl ActivityLibrary {
         let object_name = random_object_name()?;
         let temporary_path = self.objects.join(format!(".tmp-{object_name}"));
         let final_path = self.objects.join(&object_name);
-        let encrypted = measure(LibraryStage::Encryption, report, || {
+        let encrypted = measure(LibraryStage::Encryption, report, |_| {
             encrypt_original(&self.object_key, &identity, bytes)
         })?;
-        measure(LibraryStage::FileWriteSync, report, || {
+        measure(LibraryStage::FileWriteSync, report, |_| {
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -273,12 +279,12 @@ impl ActivityLibrary {
 
         // The object is durable before the row is committed. A failed or interrupted commit
         // leaves an orphan; open() removes it after checking committed references.
-        let transaction = measure(LibraryStage::SampleInserts, report, || {
+        let transaction = measure(LibraryStage::SampleInserts, report, |report| {
             let transaction = self.database.transaction()?;
-            save_activity(&transaction, &activity, &object_name)?;
+            save_activity(&transaction, &activity, &object_name, report)?;
             Ok(transaction)
         })?;
-        measure(LibraryStage::DatabaseCommit, report, || {
+        measure(LibraryStage::DatabaseCommit, report, |_| {
             Ok(transaction.commit()?)
         })?;
         Ok(ImportResult {
@@ -496,6 +502,7 @@ fn save_activity(
     transaction: &rusqlite::Transaction<'_>,
     activity: &ImportedActivity,
     object_name: &str,
+    report: &mut dyn FnMut(LibraryProgress),
 ) -> Result<(), LibraryError> {
     let sport = match activity.data.sport {
         Sport::Unknown => 0,
@@ -517,6 +524,10 @@ fn save_activity(
         ],
     )?;
     let mut insert = transaction.prepare("INSERT INTO samples VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
+    let started = Instant::now();
+    let total = activity.data.samples.len();
+    // Bound event volume even at the importer limit. Never emit one IPC event per row.
+    let stride = (total / 100).max(1024);
     for (index, sample) in activity.data.samples.iter().enumerate() {
         insert.execute(params![
             activity.source.identity.sha256.as_slice(),
@@ -526,6 +537,14 @@ fn save_activity(
             sample.speed_m_s,
             sample.heart_rate_bpm,
         ])?;
+        let completed = index + 1;
+        if completed % stride == 0 || completed == total {
+            report(LibraryProgress::SamplesWritten {
+                completed,
+                total,
+                elapsed: started.elapsed(),
+            });
+        }
     }
     Ok(())
 }

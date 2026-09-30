@@ -1,3 +1,4 @@
+use crate::diagnostics::{Diagnostics, Event};
 use effortline_core::fit_import::{import_fit_activity, ImportError, Sport, MAX_FIT_BYTES};
 use serde::Serialize;
 use std::fs::File;
@@ -35,7 +36,7 @@ pub(super) enum PreviewResponse {
     },
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum PreviewError {
     PickerFailed,
@@ -89,7 +90,7 @@ pub(super) struct FitPreview {
     sport: PreviewSport,
     duration_seconds: u64,
     distance_m: Option<f64>,
-    sample_count: usize,
+    pub(super) sample_count: usize,
     heart_rate_samples: usize,
 }
 
@@ -104,7 +105,11 @@ impl PreviewResponse {
 
 #[tauri::command]
 pub(super) async fn preview_fit_activity(app: tauri::AppHandle) -> PreviewResponse {
-    tauri::async_runtime::spawn_blocking(move || {
+    let diagnostics = app.state::<Diagnostics>();
+    let (operation, started) = diagnostics.begin(Event::PreviewStarted);
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let app = worker_app;
         let state = app.state::<PreviewState>();
         let Ok(mut pending) = state.0.try_lock() else {
             return PreviewResponse::error(PreviewError::PreviewBusy);
@@ -124,7 +129,15 @@ pub(super) async fn preview_fit_activity(app: tauri::AppHandle) -> PreviewRespon
         }
     })
     .await
-    .unwrap_or_else(|_| PreviewResponse::error(PreviewError::PickerFailed))
+    .unwrap_or_else(|_| PreviewResponse::error(PreviewError::PickerFailed));
+    diagnostics.record(
+        operation,
+        Event::PreviewFinished {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            outcome: (&result).into(),
+        },
+    );
+    result
 }
 
 pub(super) fn preview_selected_path(
