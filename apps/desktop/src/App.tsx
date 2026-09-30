@@ -93,6 +93,63 @@ function batchProgressMessage(
   return `${progress.outcome.index} of ${progress.total} finished: ${progress.outcome.name}`;
 }
 
+export function BatchProgressView({
+  processedFiles,
+  totalFiles,
+  active,
+  saveProgress,
+}: {
+  processedFiles: number;
+  totalFiles: number;
+  active: boolean;
+  saveProgress: SaveProgress | null;
+}) {
+  if (totalFiles < 1) return null;
+  const sampleProgress =
+    saveProgress?.status === "samples_written" ? saveProgress : null;
+  return (
+    <div className="batch-progress-card" aria-live="polite">
+      <div className="progress-heading">
+        <strong>Batch progress</strong>
+        <span>
+          {processedFiles} of {totalFiles} files processed
+        </span>
+      </div>
+      <progress
+        className="batch-file-progress"
+        value={processedFiles}
+        max={totalFiles}
+        aria-label="Files processed"
+      />
+      {sampleProgress ? (
+        <div className="sample-progress">
+          <div className="progress-heading">
+            <span>Samples added to this file</span>
+            <span>
+              {sampleProgress.completed.toLocaleString()} of{" "}
+              {sampleProgress.total.toLocaleString()}
+            </span>
+          </div>
+          <progress
+            value={sampleProgress.completed}
+            max={sampleProgress.total}
+            aria-label="Samples added to the current file"
+          />
+          <small>Not yet committed to your library.</small>
+        </div>
+      ) : active ? (
+        <div
+          className="batch-stage-progress"
+          role="progressbar"
+          aria-label="Current file is being processed"
+        >
+          <span />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function BatchFileList({ files }: { files: BatchFileOutcome[] }) {
   return (
     <ul className="batch-file-list">
@@ -495,6 +552,23 @@ function App() {
                 </button>
               )}
             </>
+          )}
+          {(batchProgress?.total || batchResponse?.status === "completed") && (
+            <BatchProgressView
+              processedFiles={batchFiles.length}
+              totalFiles={
+                batchProgress?.total ??
+                (batchResponse?.status === "completed"
+                  ? batchResponse.files.length
+                  : 0)
+              }
+              active={batchBusy}
+              saveProgress={
+                batchProgress?.status === "save_stage"
+                  ? batchProgress.progress
+                  : null
+              }
+            />
           )}
           {batchCommandFailed && (
             <p role="alert">

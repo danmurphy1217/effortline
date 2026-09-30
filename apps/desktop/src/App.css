@@ -60,6 +60,102 @@ button {
   border-top: 1px solid #325043;
 }
 
+.batch-progress-card {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid #50735d;
+  border-radius: 0.75rem;
+  background: linear-gradient(145deg, #19382b, #142d24);
+}
+
+.progress-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #c6f4d2;
+  font-size: 0.9rem;
+}
+
+.progress-heading span {
+  color: #bed0c4;
+  text-align: right;
+}
+
+.batch-progress-card progress {
+  display: block;
+  width: 100%;
+  height: 0.65rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 1rem;
+  background: #294a3a;
+  color: #a9e9bd;
+  appearance: none;
+}
+
+.batch-progress-card progress::-webkit-progress-bar {
+  border-radius: 1rem;
+  background: #294a3a;
+}
+
+.batch-progress-card progress::-webkit-progress-value {
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #69d993, #c6f4d2);
+  transition: width 220ms ease-out;
+}
+
+.batch-progress-card progress::-moz-progress-bar {
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #69d993, #c6f4d2);
+}
+
+.sample-progress {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.4rem;
+}
+
+.sample-progress small {
+  color: #bed0c4;
+}
+
+.batch-stage-progress {
+  height: 0.35rem;
+  overflow: hidden;
+  border-radius: 1rem;
+  background: #294a3a;
+}
+
+.batch-stage-progress span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #69d993, #c6f4d2);
+  animation: batch-progress-sweep 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes batch-progress-sweep {
+  from {
+    transform: translateX(-15%);
+  }
+  to {
+    transform: translateX(165%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .batch-progress-card progress::-webkit-progress-value {
+    transition: none;
+  }
+
+  .batch-stage-progress span {
+    display: none;
+  }
+}
+
 .batch-file-list {
   display: grid;
   gap: 0.8rem;

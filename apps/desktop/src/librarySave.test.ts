@@ -81,9 +81,8 @@ void test("rendered completed states replace the save action and active progress
     appType: "custom",
   });
   try {
-    const { BatchFileList, SaveAction } = (await server.ssrLoadModule(
-      "/src/App.tsx",
-    )) as typeof import("./App");
+    const { BatchFileList, BatchProgressView, SaveAction } =
+      (await server.ssrLoadModule("/src/App.tsx")) as typeof import("./App");
     for (const status of [
       "already_present",
       "checking",
@@ -171,6 +170,43 @@ void test("rendered completed states replace the save action and active progress
     assert.match(batchHtml, /Already in your library/);
     assert.match(batchHtml, /checksum/);
     assert.match(batchHtml, /cancelled the batch/);
+    const fileProgressHtml = renderToStaticMarkup(
+      createElement(BatchProgressView, {
+        processedFiles: 1,
+        totalFiles: 3,
+        active: true,
+        saveProgress: {
+          version: 1,
+          status: "samples_written",
+          completed: 1024,
+          total: 16705,
+          elapsed_ms: 500,
+        },
+      }),
+    );
+    assert.match(fileProgressHtml, /1 of 3 files processed/);
+    assert.match(fileProgressHtml, /value="1" max="3"/);
+    assert.match(fileProgressHtml, /1,024 of 16,705/);
+    assert.match(fileProgressHtml, /value="1024" max="16705"/);
+    assert.match(fileProgressHtml, /Not yet committed/);
+    const indeterminateHtml = renderToStaticMarkup(
+      createElement(BatchProgressView, {
+        processedFiles: 0,
+        totalFiles: 2,
+        active: true,
+        saveProgress: {
+          version: 1,
+          status: "started",
+          stage: "fit_parsing",
+        },
+      }),
+    );
+    const activityBar = indeterminateHtml.match(
+      /<div class="batch-stage-progress"[^>]*>/,
+    )?.[0];
+    assert.ok(activityBar);
+    assert.match(activityBar, /aria-label="Current file is being processed"/);
+    assert.doesNotMatch(activityBar, /aria-valuenow|value=/);
     for (const [status, heading] of [
       ["saved", "Saved to library"],
       ["already_present", "Already in your library"],
