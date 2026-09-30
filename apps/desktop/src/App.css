@@ -55,6 +55,32 @@ button {
   cursor: pointer;
 }
 
+.batch-result {
+  padding-top: 1.25rem;
+  border-top: 1px solid #325043;
+}
+
+.batch-file-list {
+  display: grid;
+  gap: 0.8rem;
+  padding: 0;
+  list-style: none;
+}
+
+.batch-file-list li {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid #325043;
+  border-radius: 0.5rem;
+  background: #152e25;
+  overflow-wrap: anywhere;
+}
+
+.batch-file-list span {
+  color: #bed0c4;
+}
+
 button:hover:not(:disabled) {
   background: #c6f4d2;
 }

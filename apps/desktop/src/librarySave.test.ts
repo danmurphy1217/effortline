@@ -1,7 +1,11 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
 import test from "node:test";
-import { saveButtonState, saveProgressMessage } from "./librarySave.ts";
+import {
+  batchFileErrorMessage,
+  saveButtonState,
+  saveProgressMessage,
+} from "./librarySave.ts";
 
 void test("completed saves never retain a busy cursor or an actionable save label", () => {
   for (const [status, label] of [
@@ -60,6 +64,13 @@ void test("slow commits stay unconfirmed until the save response arrives", () =>
   assert.doesNotMatch(finished, /Saved to/);
 });
 
+void test("batch FIT and storage failures have useful safe messages", () => {
+  assert.match(batchFileErrorMessage("fit_corrupt"), /checksum/);
+  assert.match(batchFileErrorMessage("fit_too_large"), /16 MiB/);
+  assert.match(batchFileErrorMessage("library_secret_unavailable"), /Keychain/);
+  assert.match(batchFileErrorMessage("file_read_failed"), /file access/);
+});
+
 void test("rendered completed states replace the save action and active progress", async () => {
   const { createServer } = await import("vite");
   const { createElement } = await import("react");
@@ -70,7 +81,7 @@ void test("rendered completed states replace the save action and active progress
     appType: "custom",
   });
   try {
-    const { SaveAction } = (await server.ssrLoadModule(
+    const { BatchFileList, SaveAction } = (await server.ssrLoadModule(
       "/src/App.tsx",
     )) as typeof import("./App");
     for (const status of [
@@ -130,6 +141,36 @@ void test("rendered completed states replace the save action and active progress
       assert.match(html, /Not yet committed/);
       assert.doesNotMatch(html, /Saved to library|save-complete|%/);
     }
+    const batchHtml = renderToStaticMarkup(
+      createElement(BatchFileList, {
+        files: [
+          { index: 1, name: "saved.fit", status: "saved", code: null },
+          {
+            index: 2,
+            name: "duplicate.fit",
+            status: "already_present",
+            code: null,
+          },
+          {
+            index: 3,
+            name: "broken.fit",
+            status: "failed",
+            code: "fit_corrupt",
+          },
+          {
+            index: 4,
+            name: "later.fit",
+            status: "not_imported",
+            code: null,
+          },
+        ],
+      }),
+    );
+    assert.match(batchHtml, /saved\.fit/);
+    assert.match(batchHtml, /Saved to your encrypted library/);
+    assert.match(batchHtml, /Already in your library/);
+    assert.match(batchHtml, /checksum/);
+    assert.match(batchHtml, /cancelled the batch/);
     for (const [status, heading] of [
       ["saved", "Saved to library"],
       ["already_present", "Already in your library"],
