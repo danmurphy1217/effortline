@@ -293,6 +293,18 @@ impl ActivityLibrary {
         })
     }
 
+    /// Check one source identity without loading sample rows. A saved result requires
+    /// an intact authenticated original, just as a duplicate import does.
+    pub fn contains_verified_source_with_progress(
+        &self,
+        identity: &SourceIdentity,
+        report: &mut impl FnMut(LibraryProgress),
+    ) -> Result<bool, LibraryError> {
+        measure(LibraryStage::DuplicateCheck, report, |_| {
+            Ok(self.read_original_bytes(identity)?.is_some())
+        })
+    }
+
     /// List source identities without loading sample rows or original bytes.
     pub fn list_activity_ids(&self) -> Result<Vec<SourceIdentity>, LibraryError> {
         let mut statement = self

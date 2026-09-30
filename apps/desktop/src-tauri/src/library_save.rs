@@ -109,6 +109,127 @@ pub(super) enum SaveResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum LibraryCheckResponse {
+    AlreadyPresent { version: u8 },
+    NotPresent { version: u8 },
+    Error { version: u8, code: SaveError },
+}
+
+impl LibraryCheckResponse {
+    fn error(code: SaveError) -> Self {
+        Self::Error { version: 1, code }
+    }
+}
+
+#[tauri::command]
+pub(super) async fn check_preview_in_library(
+    app: tauri::AppHandle,
+    request: SaveRequest,
+    on_progress: Channel<SaveProgress>,
+) -> LibraryCheckResponse {
+    let diagnostics = app.state::<Diagnostics>();
+    let (operation, started) = diagnostics.begin(Event::LibraryCheckStarted);
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let app = worker_app;
+        let diagnostics = app.state::<Diagnostics>();
+        let state = app.state::<PreviewState>();
+        let Ok(pending) = state.0.try_lock() else {
+            return LibraryCheckResponse::error(SaveError::LibraryBusy);
+        };
+        let directory = match app.path().app_local_data_dir() {
+            Ok(path) => path.join("library"),
+            Err(_) => return LibraryCheckResponse::error(SaveError::LibraryLocationUnavailable),
+        };
+        let provider = KeychainSecret {
+            directory: &directory,
+            service: "com.danmurphy.effortline.library.v1",
+            account: "primary",
+        };
+        let state = app.state::<LibraryState>();
+        let Ok(mut session) = state.0.try_lock() else {
+            return LibraryCheckResponse::error(SaveError::LibraryBusy);
+        };
+        if session.is_some() {
+            diagnostics.record(operation, Event::LibraryReused);
+        }
+        check_in_session(
+            &mut session,
+            pending.as_ref(),
+            &request,
+            &directory,
+            &provider,
+            &mut |event| {
+                let _ = on_progress.send(SaveProgress::from(event));
+                diagnostics.record(
+                    operation,
+                    Event::LibraryCheckProgress {
+                        progress: event.into(),
+                    },
+                );
+            },
+        )
+    })
+    .await
+    .unwrap_or_else(|_| LibraryCheckResponse::error(SaveError::SaveFailed));
+    diagnostics.record(
+        operation,
+        Event::LibraryCheckFinished {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            result: result.clone(),
+        },
+    );
+    result
+}
+
+fn check_in_session(
+    session: &mut Option<ActivityLibrary>,
+    pending: Option<&PendingPreview>,
+    request: &SaveRequest,
+    directory: &Path,
+    provider: &impl LibrarySecretProvider,
+    report: &mut impl FnMut(LibraryProgress),
+) -> LibraryCheckResponse {
+    if request.version != 1 {
+        return LibraryCheckResponse::error(SaveError::UnsupportedRequest);
+    }
+    let Some(pending) = pending.filter(|preview| preview.id == request.preview_id) else {
+        return LibraryCheckResponse::error(SaveError::PreviewExpired);
+    };
+    if session.is_none() {
+        // A status lookup never creates a new library or Keychain entry.
+        match (
+            directory.join("library.sqlite3").try_exists(),
+            directory.join("objects").try_exists(),
+        ) {
+            (Ok(false), Ok(false)) => return LibraryCheckResponse::NotPresent { version: 1 },
+            (Ok(true), Ok(true)) => (),
+            (Ok(_), Ok(_)) => return LibraryCheckResponse::error(SaveError::LibraryIncomplete),
+            _ => return LibraryCheckResponse::error(SaveError::LibraryIo),
+        }
+        match ActivityLibrary::open_with_progress(directory, provider, report) {
+            Ok(library) => *session = Some(library),
+            Err(error) => return LibraryCheckResponse::error(error.into()),
+        }
+    }
+    let Some(library) = session.take() else {
+        return LibraryCheckResponse::error(SaveError::SaveFailed);
+    };
+    match library.contains_verified_source_with_progress(&pending.identity, report) {
+        Ok(present) => {
+            *session = Some(library);
+            if present {
+                LibraryCheckResponse::AlreadyPresent { version: 1 }
+            } else {
+                LibraryCheckResponse::NotPresent { version: 1 }
+            }
+        }
+        Err(error) => LibraryCheckResponse::error(error.into()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum SaveError {
     UnsupportedRequest,
@@ -454,6 +575,183 @@ mod tests {
     }
 
     #[test]
+    fn lookup_recognizes_saved_preview_without_another_save_and_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library");
+        let (pending, request) = preview(&synthetic_fit(true));
+        struct MustNotLoad;
+        impl LibrarySecretProvider for MustNotLoad {
+            fn load_secret(&self) -> Result<LibrarySecret, SecretUnavailable> {
+                panic!("new or reused library lookup must not access Keychain");
+            }
+        }
+        let mut session = None;
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &MustNotLoad,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::NotPresent { version: 1 }
+        );
+        assert!(!path.exists());
+        assert!(session.is_none());
+        assert_eq!(
+            save_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &TestSecret,
+                &mut |_| {}
+            ),
+            SaveResponse::Saved { version: 1 }
+        );
+        let (pending, request) = preview(&synthetic_fit(true));
+        let mut events = Vec::new();
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &MustNotLoad,
+                &mut |event| events.push(event)
+            ),
+            LibraryCheckResponse::AlreadyPresent { version: 1 }
+        );
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, LibraryProgress::Started(LibraryStage::OpenRecovery))));
+        assert_eq!(
+            session.as_ref().unwrap().list_activity_ids().unwrap().len(),
+            1
+        );
+        drop(session.take());
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &TestSecret,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::AlreadyPresent { version: 1 }
+        );
+        let (different, different_request) = preview(&synthetic_fit(false));
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                different.as_ref(),
+                &different_request,
+                &path,
+                &MustNotLoad,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::NotPresent { version: 1 }
+        );
+        assert_eq!(
+            session.as_ref().unwrap().list_activity_ids().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                different.as_ref(),
+                &request,
+                &path,
+                &MustNotLoad,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::error(SaveError::PreviewExpired)
+        );
+        let invalid = SaveRequest {
+            version: 2,
+            preview_id: request.preview_id,
+        };
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                None,
+                &invalid,
+                &path,
+                &MustNotLoad,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::error(SaveError::UnsupportedRequest)
+        );
+    }
+
+    #[test]
+    fn lookup_failure_is_unknown_and_never_claims_activity_is_new_or_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library");
+        let (pending, request) = preview(&synthetic_fit(true));
+        let mut session = None;
+        save_in_session(
+            &mut session,
+            pending.as_ref(),
+            &request,
+            &path,
+            &TestSecret,
+            &mut |_| {},
+        );
+        drop(session.take());
+        struct Denied;
+        impl LibrarySecretProvider for Denied {
+            fn load_secret(&self) -> Result<LibrarySecret, SecretUnavailable> {
+                Err(SecretUnavailable)
+            }
+        }
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &Denied,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::error(SaveError::LibrarySecretUnavailable)
+        );
+        assert!(session.is_none());
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &TestSecret,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::AlreadyPresent { version: 1 }
+        );
+        let object = std::fs::read_dir(path.join("objects"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::write(object, b"synthetic damage").unwrap();
+        assert_eq!(
+            check_in_session(
+                &mut session,
+                pending.as_ref(),
+                &request,
+                &path,
+                &TestSecret,
+                &mut |_| {}
+            ),
+            LibraryCheckResponse::error(SaveError::LibraryCorruptOriginal)
+        );
+        assert!(session.is_none());
+    }
+
+    #[test]
     fn repeated_saves_reuse_prepopulated_library_and_recover_after_failure_or_restart() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("library");
@@ -526,6 +824,7 @@ mod tests {
 
         // An error invalidates the session. Next open must clean interrupted writes.
         let broken = PendingPreview {
+            identity: pending.as_ref().unwrap().identity.clone(),
             id: request.preview_id.clone(),
             bytes: b"synthetic invalid".to_vec().into(),
         };

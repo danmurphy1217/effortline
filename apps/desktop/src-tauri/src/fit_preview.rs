@@ -15,6 +15,7 @@ pub(super) struct PreviewState(pub Mutex<Option<PendingPreview>>);
 pub(super) struct PendingPreview {
     pub id: String,
     pub bytes: Zeroizing<Vec<u8>>,
+    pub identity: effortline_core::fit_import::SourceIdentity,
 }
 
 const PREVIEW_VERSION: u8 = 1;
@@ -184,6 +185,7 @@ pub(super) fn preview_from_reader(
     let preview_id: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
     *pending = Some(PendingPreview {
         id: preview_id.clone(),
+        identity: activity.source.identity,
         bytes,
     });
     let data = activity.data;

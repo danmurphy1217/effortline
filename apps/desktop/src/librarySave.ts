@@ -21,6 +21,33 @@ export type SaveResponse =
   | { version: 1; status: "saved" | "already_present" }
   | { version: 1; status: "error"; code: SaveErrorCode };
 
+export type LibraryCheckResponse =
+  | { version: 1; status: "already_present" | "not_present" }
+  | { version: 1; status: "error"; code: SaveErrorCode };
+
+export type LibraryCheckState =
+  LibraryCheckResponse | { status: "checking" | "unavailable" };
+
+export async function checkFitPreview(
+  previewId: string,
+  onProgress: (progress: SaveProgress) => void,
+): Promise<LibraryCheckResponse> {
+  const channel = new Channel<SaveProgress>();
+  channel.onmessage = (progress) => {
+    if (progress.version === 1) onProgress(progress);
+  };
+  const response = await invoke<LibraryCheckResponse>(
+    "check_preview_in_library",
+    {
+      request: { version: 1, preview_id: previewId },
+      onProgress: channel,
+    },
+  );
+  if (response.version !== 1)
+    throw new Error("Unsupported library check response version");
+  return response;
+}
+
 export type SaveStage =
   | "keychain_access"
   | "open_recovery"
@@ -72,7 +99,7 @@ export function saveProgressMessage(
   }
   if (progress.status === "finished") {
     return progress.succeeded
-      ? `${stageMessages[progress.stage]} completed. Waiting for the next save result.`
+      ? `${stageMessages[progress.stage]} completed. Waiting for the result.`
       : `${stageMessages[progress.stage]} failed. Waiting for error details.`;
   }
   const elapsed = Math.max(0, Math.floor(elapsedSeconds));

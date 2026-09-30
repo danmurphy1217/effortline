@@ -129,3 +129,11 @@ Neither sample persistence nor opening this library reproduced a multi-minute sa
 The native synthetic files and diagnostic logs remain outside Git. No library data were deleted. The app library contains both synthetic and other activities; do not reset it to remove these fixtures. Log cleanup is separate: quit the app and remove only `diagnostics.jsonl` and `diagnostics.previous.jsonl` under `~/Library/Logs/com.danmurphy.effortline/`.
 
 Local checks for this follow-up passed: 38 workspace tests (two opt-in tests excluded), 24 core tests, the opt-in live Keychain test, five frontend tests, both Rust lint commands, Rust format, frontend type/lint/format/build checks, packaged debug build, and Apple Development signature verification. Native large-save and same-session repeated-save checks passed. CI results for this revision are tracked on PR #5.
+
+## Preview lookup follow-up
+
+The preview now checks saved status before offering Save. Test cases cover an absent library without Keychain access or directory creation; matching and new sources in a cached library; matching after restart; stale/version-invalid requests; denied access and retry; and a corrupt original. A successful match verifies the original and creates no activity. Render checks cover saved, checking, and unknown states without a Save action. Local workspace tests passed 40 tests, with two opt-in tests excluded; five frontend tests, Rust format/lint, and frontend type/lint/format checks passed.
+
+For the latest manual flow, choose an already-saved file after restart and allow Keychain access if requested. **Already in your library** should appear without pressing Save. The diagnostic operation is `library_check`, with open/recovery on the first existing-library check and reuse on later checks. Denial leaves the preview visible with **Check library again** and no Save action. A new file should offer Save only after the check reports not-present. A new library is still created only by explicit Save.
+
+The updated signed app passed the automatic lookup check after restart: choosing the saved 16,705-sample synthetic FIT directly showed **Already in your library**, with no Save button. Local diagnostics confirmed `library_check_finished: already_present` and zero `save_started` events in that app session. The packaged build and signature verification also passed.

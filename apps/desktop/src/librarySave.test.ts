@@ -56,7 +56,7 @@ void test("slow commits stay unconfirmed until the save response arrives", () =>
     },
     30,
   );
-  assert.match(finished, /Waiting for the next save result/);
+  assert.match(finished, /Waiting for the result/);
   assert.doesNotMatch(finished, /Saved to/);
 });
 
@@ -73,6 +73,39 @@ void test("rendered completed states replace the save action and active progress
     const { SaveAction } = (await server.ssrLoadModule(
       "/src/App.tsx",
     )) as typeof import("./App");
+    for (const status of [
+      "already_present",
+      "checking",
+      "unavailable",
+    ] as const) {
+      const html = renderToStaticMarkup(
+        createElement(SaveAction, {
+          saving: false,
+          busy: false,
+          saveResponse: null,
+          libraryCheck:
+            status === "already_present" ? { version: 1, status } : { status },
+          progress: null,
+          elapsedSeconds: 0,
+          onSave: () => {
+            throw new Error("save must not be offered");
+          },
+        }),
+      );
+      assert.doesNotMatch(
+        html,
+        /Save to library|This preview has not been saved/,
+      );
+      if (status === "already_present") {
+        assert.match(html, /Already in your library/);
+        assert.doesNotMatch(html, /<button/);
+      } else if (status === "checking") {
+        assert.match(html, /Checking your library/);
+        assert.doesNotMatch(html, /<button/);
+      } else {
+        assert.match(html, /Check library again/);
+      }
+    }
     for (const completed of [1024, 8192, 16705]) {
       const html = renderToStaticMarkup(
         createElement(SaveAction, {

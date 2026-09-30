@@ -6,6 +6,8 @@ import {
 } from "./fitPreview";
 import {
   saveFitPreview,
+  checkFitPreview,
+  type LibraryCheckState,
   saveErrorMessage,
   type SaveResponse,
   type SaveProgress,
@@ -58,6 +60,8 @@ export function SaveAction({
   progress,
   elapsedSeconds,
   onSave,
+  libraryCheck,
+  onCheckAgain,
 }: {
   saving: boolean;
   busy: boolean;
@@ -65,7 +69,40 @@ export function SaveAction({
   progress: SaveProgress | null;
   elapsedSeconds: number;
   onSave: () => void;
+  libraryCheck?: LibraryCheckState;
+  onCheckAgain?: () => void;
 }) {
+  if (!saveResponse && libraryCheck?.status === "checking") {
+    return (
+      <p role="status">
+        {progress
+          ? saveProgressMessage(progress, elapsedSeconds)
+          : "Checking your library…"}
+      </p>
+    );
+  }
+  if (
+    !saveResponse &&
+    (libraryCheck?.status === "error" || libraryCheck?.status === "unavailable")
+  ) {
+    return (
+      <div>
+        <p role="alert">
+          Could not check whether this activity is already saved.
+          {libraryCheck.status === "error" &&
+          libraryCheck.code === "library_secret_unavailable"
+            ? " Allow macOS Keychain access and try again."
+            : " Check library access and try again."}
+        </p>
+        <button type="button" onClick={onCheckAgain}>
+          Check library again
+        </button>
+      </div>
+    );
+  }
+  if (!saveResponse && libraryCheck?.status === "already_present") {
+    saveResponse = { version: 1, status: "already_present" };
+  }
   const saveButton = saveButtonState(saving, saveResponse);
   return (
     <>
@@ -117,16 +154,27 @@ function App() {
     event: SaveProgress;
     startedAt: number;
   } | null>(null);
+  const [libraryCheck, setLibraryCheck] = useState<LibraryCheckState>({
+    status: "checking",
+  });
+  const checkingLibrary =
+    libraryCheck.status === "checking" && response?.status === "ready";
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!saving) return;
+    if (!saving && !checkingLibrary) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [saving]);
+  }, [saving, checkingLibrary]);
 
   async function saveActivity() {
-    if (response?.status !== "ready" || busy || saving) return;
+    if (
+      response?.status !== "ready" ||
+      busy ||
+      saving ||
+      libraryCheck.status !== "not_present"
+    )
+      return;
     setSaveProgress(null);
     setSaving(true);
     setSaveResponse(null);
@@ -146,15 +194,33 @@ function App() {
     }
   }
 
+  async function checkLibrary(previewId: string) {
+    setLibraryCheck({ status: "checking" });
+    setSaveProgress(null);
+    try {
+      setLibraryCheck(
+        await checkFitPreview(previewId, (event) => {
+          const receivedAt = Date.now();
+          setNow(receivedAt);
+          setSaveProgress({ event, startedAt: receivedAt });
+        }),
+      );
+    } catch {
+      setLibraryCheck({ status: "unavailable" });
+    }
+  }
+
   async function chooseFitFile() {
-    if (busy || saving) return;
+    if (busy || saving || checkingLibrary) return;
     setBusy(true);
     setSaveResponse(null);
     setSaveCommandFailed(false);
     setResponse(null);
     setCommandFailed(false);
     try {
-      setResponse(await requestFitPreview());
+      const next = await requestFitPreview();
+      setResponse(next);
+      if (next.status === "ready") await checkLibrary(next.preview_id);
     } catch {
       setCommandFailed(true);
     } finally {
@@ -173,13 +239,23 @@ function App() {
       <button
         type="button"
         onClick={() => void chooseFitFile()}
-        disabled={busy || saving}
+        disabled={busy || saving || checkingLibrary}
       >
-        {busy ? "Opening file…" : "Choose a FIT file"}
+        {checkingLibrary
+          ? "Checking library…"
+          : busy
+            ? "Opening file…"
+            : "Choose a FIT file"}
       </button>
 
-      <section className="result" aria-live="polite" aria-busy={busy}>
-        {busy && <p>Choose a file in the system window to see its preview.</p>}
+      <section
+        className="result"
+        aria-live="polite"
+        aria-busy={busy && !checkingLibrary}
+      >
+        {busy && !checkingLibrary && (
+          <p>Choose a file in the system window to see its preview.</p>
+        )}
         {response?.status === "cancelled" && (
           <p>No file was selected. No activity was saved.</p>
         )}
@@ -242,6 +318,8 @@ function App() {
                 saveProgress ? (now - saveProgress.startedAt) / 1000 : 0
               }
               onSave={() => void saveActivity()}
+              libraryCheck={libraryCheck}
+              onCheckAgain={() => void checkLibrary(response.preview_id)}
             />
             {saveResponse?.status === "error" && (
               <p role="alert">{saveErrorMessage(saveResponse.code)}</p>
@@ -252,12 +330,15 @@ function App() {
                 not create a duplicate.
               </p>
             )}
-            {!saving && !saveResponse && !saveCommandFailed && (
-              <p className="save-note">
-                This preview has not been saved. Select “Save to library” to
-                keep an encrypted copy.
-              </p>
-            )}
+            {!saving &&
+              !saveResponse &&
+              !saveCommandFailed &&
+              libraryCheck.status === "not_present" && (
+                <p className="save-note">
+                  This preview has not been saved. Select “Save to library” to
+                  keep an encrypted copy.
+                </p>
+              )}
           </div>
         )}
       </section>

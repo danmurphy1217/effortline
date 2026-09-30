@@ -49,4 +49,4 @@ Effortline keeps diagnostic logs on your device to help investigate errors and s
 
 Logs include app version, platform, event times, operation IDs, save-stage timings, sample counts, and error codes. They do not contain activity contents, filenames, routes, or keys. Nothing is uploaded. Review logs before you choose to share them. To clear them, quit Effortline and delete only those two diagnostic files. This does not remove library data. Logs are best effort and may omit records if the disk is unavailable or the app stops suddenly.
 
-After its first successful save, the library stays unlocked in memory until the app quits or a save fails. Later saves reuse that session. Fully quit the app before testing a Keychain permission change.
+The preview checks whether the file is already saved. Existing files show **Already in your library** without a Save button. This check may ask for Keychain access. After the first successful library check or save, the library stays unlocked in memory until the app quits or a storage operation fails. Later saves reuse that session. Fully quit the app before testing a Keychain permission change.

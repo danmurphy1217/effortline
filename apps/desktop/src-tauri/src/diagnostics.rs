@@ -1,6 +1,6 @@
 //! Local diagnostics accept only reviewed, typed fields. Never pass raw errors or activity data.
 use crate::fit_preview::{PreviewError, PreviewResponse};
-use crate::library_save::{SaveProgress, SaveResponse};
+use crate::library_save::{LibraryCheckResponse, SaveProgress, SaveResponse};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -26,6 +26,14 @@ pub(super) enum Event {
         outcome: PreviewOutcome,
     },
     SaveStarted,
+    LibraryCheckStarted,
+    LibraryCheckProgress {
+        progress: SaveProgress,
+    },
+    LibraryCheckFinished {
+        elapsed_ms: f64,
+        result: LibraryCheckResponse,
+    },
     LibraryReused,
     SaveProgress {
         progress: SaveProgress,

@@ -25,7 +25,8 @@ pub fn run() {
         .manage(library_save::LibraryState::default())
         .invoke_handler(tauri::generate_handler![
             fit_preview::preview_fit_activity,
-            library_save::save_preview_to_library
+            library_save::save_preview_to_library,
+            library_save::check_preview_in_library
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

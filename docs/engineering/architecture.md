@@ -48,12 +48,18 @@ Save progress uses a versioned Tauri channel. The core reports fixed storage sta
 
 ### Library session and recovery
 
-Tauri retains one `ActivityLibrary` behind a mutex after the first successful save. It holds the core's exclusive library lock for that session. Subsequent saves reuse the connection and derived encryption keys; they do not reload Keychain or repeat the full object recovery scan. The core still owns recovery. A failed import drops the connection and lock, so the next attempt opens and recovers again. Every new app process also opens and recovers before writing. There is no persistent flag that skips recovery after a crash. File sync and database commit ordering are unchanged.
+Tauri retains one `ActivityLibrary` behind a mutex after the first successful lookup of an existing library or successful save. It holds the core's exclusive library lock for that session. Subsequent saves reuse the connection and derived encryption keys; they do not reload Keychain or repeat the full object recovery scan. The core still owns recovery. A failed import drops the connection and lock, so the next attempt opens and recovers again. Every new app process also opens and recovers before writing. There is no persistent flag that skips recovery after a crash. File sync and database commit ordering are unchanged.
 
-The library remains unlocked until the app fully quits or a save fails. Locking Keychain after the first unlock does not revoke this in-memory library session. Quit the app before testing Keychain denial, moving the library, or changing its key. A second app process cannot open the same locked library.
+The library remains unlocked until the app fully quits or a storage operation fails. Locking Keychain after the first unlock does not revoke this in-memory library session. Quit the app before testing Keychain denial, moving the library, or changing its key. A second app process cannot open the same locked library.
 
 ### Local diagnostics
 
 The desktop shell owns device-local diagnostics. Startup, preview results, save stages, sample counts, elapsed durations, library reuse, and stable error codes use a typed allowlist. Logs never accept arbitrary strings from imported files or raw error messages. They exclude activity contents, filenames, paths, source hashes, notes, routes, and secrets. The portable core only emits progress through its callback.
 
 Logs stay on the device. There is no telemetry SDK, upload, remote endpoint, or stable user identifier. Sharing a log is an explicit user action outside this save slice. A bounded background queue decouples log writes from the UI and storage. Rotation retains two files up to 1 MiB each; a separate lock serializes log writes across processes. On macOS, the log directory is mode 0700 and files are mode 0600. These are plaintext diagnostics, not encrypted activity records. Queue drops are counted in the next record. Disk errors stop the logger and emit a fixed stderr message without failing a save. Abrupt process exit can lose queued records; this is a diagnostic aid, not an audit journal.
+
+### Saved status in the preview
+
+Once the summary is ready, the UI calls `check_preview_in_library` with the retained preview ID and version. The shell uses the canonical source identity retained with those exact bytes. The core performs an indexed lookup and authenticates only the matched original, without loading sample rows. A missing library returns not-present without creating storage or accessing Keychain. An existing library may need a Keychain prompt during preview; a successful check reuses the same locked session for later checks and saves.
+
+While checking, the preview has no Save action. A confirmed match shows **Already in your library** immediately. Lookup errors leave the saved status unknown and offer **Check library again**. The UI offers Save only after a not-present result. The save command still deduplicates atomically for other clients or retries. Library-check start, progress, and result events use the same local diagnostic safeguards.
