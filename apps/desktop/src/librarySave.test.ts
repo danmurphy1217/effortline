@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  batchCommandErrorMessage,
   batchFileErrorMessage,
   saveButtonState,
   saveProgressMessage,
@@ -69,6 +70,10 @@ void test("batch FIT and storage failures have useful safe messages", () => {
   assert.match(batchFileErrorMessage("fit_too_large"), /16 MiB/);
   assert.match(batchFileErrorMessage("library_secret_unavailable"), /Keychain/);
   assert.match(batchFileErrorMessage("file_read_failed"), /file access/);
+  assert.match(
+    batchCommandErrorMessage("randomness_unavailable"),
+    /secure import session/,
+  );
 });
 
 void test("rendered completed states replace the save action and active progress", async () => {

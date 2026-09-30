@@ -16,6 +16,7 @@ import {
   importFitFiles,
   cancelFitImport,
   batchFileErrorMessage,
+  batchCommandErrorMessage,
   type BatchProgress,
   type BatchResponse,
   type BatchFileOutcome,
@@ -379,7 +380,12 @@ function App() {
         }
       });
       setBatchResponse(result);
-      if (result.status === "completed") setBatchFiles(result.files);
+      if (result.status === "completed") {
+        setBatchFiles(result.files);
+        if (response?.status === "ready") {
+          void checkLibrary(response.preview_id);
+        }
+      }
     } catch {
       setBatchCommandFailed(true);
     } finally {
@@ -408,25 +414,29 @@ function App() {
         show a short summary, or import several FIT files into your encrypted
         local library.
       </p>
-      <button
-        type="button"
-        onClick={() => void chooseFitFile()}
-        disabled={busy || saving || checkingLibrary || batchBusy}
-      >
-        {checkingLibrary
-          ? "Checking library…"
-          : busy
-            ? "Opening file…"
-            : "Choose a FIT file"}
-      </button>
+      <div className="import-actions" aria-label="Choose an import action">
+        <button
+          className="primary-action"
+          type="button"
+          onClick={() => void chooseFitFile()}
+          disabled={busy || saving || checkingLibrary || batchBusy}
+        >
+          {checkingLibrary
+            ? "Checking library…"
+            : busy
+              ? "Opening file…"
+              : "Preview one FIT file"}
+        </button>
 
-      <button
-        type="button"
-        onClick={() => void importMultipleFitFiles()}
-        disabled={busy || saving || checkingLibrary || batchBusy}
-      >
-        {batchBusy ? "Importing FIT files…" : "Import multiple FIT files"}
-      </button>
+        <button
+          className="secondary-action"
+          type="button"
+          onClick={() => void importMultipleFitFiles()}
+          disabled={busy || saving || checkingLibrary || batchBusy}
+        >
+          {batchBusy ? "Importing FIT files…" : "Import several FIT files"}
+        </button>
+      </div>
 
       <section
         className="result"
@@ -579,15 +589,7 @@ function App() {
             <p>No files selected. Nothing was imported.</p>
           )}
           {batchResponse?.status === "error" && (
-            <p role="alert">
-              {batchResponse.code === "too_many_files"
-                ? "Choose no more than 32 FIT files at a time."
-                : batchResponse.code === "library_busy"
-                  ? "The library is busy. Wait for the other operation to finish, then retry."
-                  : batchResponse.code === "library_location_unavailable"
-                    ? "Effortline could not locate the library. Check disk access and retry."
-                    : "Effortline could not start the file picker. Try again."}
-            </p>
+            <p role="alert">{batchCommandErrorMessage(batchResponse.code)}</p>
           )}
           {batchFiles.length > 0 && (
             <>

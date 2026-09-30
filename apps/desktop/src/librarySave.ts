@@ -66,12 +66,7 @@ export type BatchResponse =
   | {
       version: 1;
       status: "error";
-      code:
-        | "picker_failed"
-        | "too_many_files"
-        | "library_busy"
-        | "library_location_unavailable"
-        | "randomness_unavailable";
+      code: BatchCommandErrorCode;
     }
   | {
       version: 1;
@@ -80,6 +75,13 @@ export type BatchResponse =
       cancelled: boolean;
       files: BatchFileOutcome[];
     };
+
+export type BatchCommandErrorCode =
+  | "picker_failed"
+  | "too_many_files"
+  | "library_busy"
+  | "library_location_unavailable"
+  | "randomness_unavailable";
 
 export type CancelBatchResponse =
   | { version: 1; status: "accepted" | "not_running" }
@@ -301,5 +303,20 @@ export function batchFileErrorMessage(code: BatchFileErrorCode): string {
     case "unsupported_request":
     case "preview_expired":
       return "Effortline could not save this activity. Check disk space and access, then retry.";
+  }
+}
+
+export function batchCommandErrorMessage(code: BatchCommandErrorCode): string {
+  switch (code) {
+    case "too_many_files":
+      return "Choose no more than 32 FIT files at a time.";
+    case "library_busy":
+      return "The library is busy. Wait for the other operation to finish, then retry.";
+    case "library_location_unavailable":
+      return "Effortline could not locate the library. Check disk access and retry.";
+    case "randomness_unavailable":
+      return "Effortline could not start a secure import session. Try again.";
+    case "picker_failed":
+      return "Effortline could not start the file picker. Try again.";
   }
 }
