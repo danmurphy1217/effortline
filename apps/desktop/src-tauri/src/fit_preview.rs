@@ -3,22 +3,44 @@ use serde::Serialize;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
+use zeroize::Zeroizing;
+
+#[derive(Default)]
+pub(super) struct PreviewState(pub Mutex<Option<PendingPreview>>);
+
+pub(super) struct PendingPreview {
+    pub id: String,
+    pub bytes: Zeroizing<Vec<u8>>,
+}
 
 const PREVIEW_VERSION: u8 = 1;
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum PreviewResponse {
-    Ready { version: u8, preview: FitPreview },
-    Cancelled { version: u8 },
-    Error { version: u8, code: PreviewError },
+    Ready {
+        version: u8,
+        preview_id: String,
+        preview: FitPreview,
+    },
+    Cancelled {
+        version: u8,
+    },
+    Error {
+        version: u8,
+        code: PreviewError,
+    },
 }
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum PreviewError {
     PickerFailed,
+    PreviewBusy,
+    RandomnessUnavailable,
     FileUnavailable,
     FileReadFailed,
     FitTooLarge,
@@ -83,15 +105,20 @@ impl PreviewResponse {
 #[tauri::command]
 pub(super) async fn preview_fit_activity(app: tauri::AppHandle) -> PreviewResponse {
     tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PreviewState>();
+        let Ok(mut pending) = state.0.try_lock() else {
+            return PreviewResponse::error(PreviewError::PreviewBusy);
+        };
+        *pending = None;
         let selected = app
             .dialog()
             .file()
             .add_filter("FIT activity", &["fit"])
             .blocking_pick_file();
         match selected {
-            None => preview_selected_path(None),
+            None => preview_selected_path(None, &mut pending),
             Some(file) => match file.into_path() {
-                Ok(path) => preview_selected_path(Some(path)),
+                Ok(path) => preview_selected_path(Some(path), &mut pending),
                 Err(_) => PreviewResponse::error(PreviewError::FileUnavailable),
             },
         }
@@ -100,7 +127,11 @@ pub(super) async fn preview_fit_activity(app: tauri::AppHandle) -> PreviewRespon
     .unwrap_or_else(|_| PreviewResponse::error(PreviewError::PickerFailed))
 }
 
-fn preview_selected_path(path: Option<PathBuf>) -> PreviewResponse {
+pub(super) fn preview_selected_path(
+    path: Option<PathBuf>,
+    pending: &mut Option<PendingPreview>,
+) -> PreviewResponse {
+    *pending = None;
     let Some(path) = path else {
         return PreviewResponse::Cancelled {
             version: PREVIEW_VERSION,
@@ -110,11 +141,15 @@ fn preview_selected_path(path: Option<PathBuf>) -> PreviewResponse {
         Ok(file) => file,
         Err(_) => return PreviewResponse::error(PreviewError::FileReadFailed),
     };
-    preview_from_reader(file)
+    preview_from_reader(file, pending)
 }
 
-fn preview_from_reader(reader: impl Read) -> PreviewResponse {
-    let mut bytes = Vec::new();
+pub(super) fn preview_from_reader(
+    reader: impl Read,
+    pending: &mut Option<PendingPreview>,
+) -> PreviewResponse {
+    *pending = None;
+    let mut bytes = Zeroizing::new(Vec::new());
     if reader
         .take(MAX_FIT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
@@ -129,9 +164,19 @@ fn preview_from_reader(reader: impl Read) -> PreviewResponse {
         Ok(activity) => activity,
         Err(error) => return PreviewResponse::error(error.into()),
     };
+    let mut random = [0_u8; 16];
+    if getrandom::fill(&mut random).is_err() {
+        return PreviewResponse::error(PreviewError::RandomnessUnavailable);
+    }
+    let preview_id: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    *pending = Some(PendingPreview {
+        id: preview_id.clone(),
+        bytes,
+    });
     let data = activity.data;
     PreviewResponse::Ready {
         version: PREVIEW_VERSION,
+        preview_id,
         preview: FitPreview {
             sport: data.sport.into(),
             duration_seconds: data.end_unix_ms.saturating_sub(data.start_unix_ms).max(0) as u64
@@ -148,10 +193,18 @@ fn preview_from_reader(reader: impl Read) -> PreviewResponse {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use serde_json::json;
     use std::io::{self, Cursor};
+
+    fn preview_from_reader(reader: impl Read) -> PreviewResponse {
+        super::preview_from_reader(reader, &mut None)
+    }
+
+    fn preview_selected_path(path: Option<PathBuf>) -> PreviewResponse {
+        super::preview_selected_path(path, &mut None)
+    }
 
     // Synthetic FIT bytes only. No device export is used in these tests.
     fn definition(local: u8, global: u16, fields: &[(u8, u8, u8)]) -> Vec<u8> {
@@ -179,7 +232,7 @@ mod tests {
         crc
     }
 
-    fn synthetic_fit(with_heart_rate: bool) -> Vec<u8> {
+    pub(crate) fn synthetic_fit(with_heart_rate: bool) -> Vec<u8> {
         const FIT_TIME: u32 = 1_068_934_400;
         let mut data = definition(0, 0, &[(0, 1, 0)]);
         data.extend([0, 4]); // file_id, activity type
@@ -216,8 +269,11 @@ mod tests {
     #[test]
     fn returns_versioned_summary_without_source_bytes_or_path() {
         let response = preview_from_reader(Cursor::new(synthetic_fit(true)));
+        let mut serialized = serde_json::to_value(response).unwrap();
+        assert_eq!(serialized["preview_id"].as_str().unwrap().len(), 32);
+        serialized.as_object_mut().unwrap().remove("preview_id");
         assert_eq!(
-            serde_json::to_value(response).unwrap(),
+            serialized,
             json!({
                 "status": "ready",
                 "version": 1,

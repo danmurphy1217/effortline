@@ -4,9 +4,18 @@ import {
   type PreviewErrorCode,
   type PreviewResponse,
 } from "./fitPreview";
+import {
+  saveFitPreview,
+  saveErrorMessage,
+  type SaveResponse,
+} from "./librarySave";
 import "./App.css";
 
 const errorMessages: Record<PreviewErrorCode, string> = {
+  preview_busy:
+    "Another file operation is in progress. Try again when it finishes.",
+  randomness_unavailable:
+    "Effortline could not prepare this preview. Try again.",
   picker_failed: "Effortline could not open the file picker. Try again.",
   file_unavailable:
     "This selection is not a local file. Choose a FIT file on this device.",
@@ -43,9 +52,29 @@ function App() {
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [commandFailed, setCommandFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveResponse, setSaveResponse] = useState<SaveResponse | null>(null);
+  const [saveCommandFailed, setSaveCommandFailed] = useState(false);
+
+  async function saveActivity() {
+    if (response?.status !== "ready" || busy || saving) return;
+    setSaving(true);
+    setSaveResponse(null);
+    setSaveCommandFailed(false);
+    try {
+      setSaveResponse(await saveFitPreview(response.preview_id));
+    } catch {
+      setSaveCommandFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function chooseFitFile() {
+    if (busy || saving) return;
     setBusy(true);
+    setSaveResponse(null);
+    setSaveCommandFailed(false);
     setResponse(null);
     setCommandFailed(false);
     try {
@@ -68,12 +97,12 @@ function App() {
       <button
         type="button"
         onClick={() => void chooseFitFile()}
-        disabled={busy}
+        disabled={busy || saving}
       >
         {busy ? "Opening file…" : "Choose a FIT file"}
       </button>
 
-      <section className="result" aria-live="polite" aria-busy={busy}>
+      <section className="result" aria-live="polite" aria-busy={busy || saving}>
         {busy && <p>Choose a file in the system window to see its preview.</p>}
         {response?.status === "cancelled" && (
           <p>No file was selected. No activity was saved.</p>
@@ -128,12 +157,48 @@ function App() {
                 </dd>
               </div>
             </dl>
+            <button
+              type="button"
+              onClick={() => void saveActivity()}
+              disabled={
+                busy ||
+                saving ||
+                saveResponse?.status === "saved" ||
+                saveResponse?.status === "already_present"
+              }
+            >
+              {saving ? "Saving…" : "Save to library"}
+            </button>
+            {saving && (
+              <p>Saving on this device. macOS may ask for Keychain access.</p>
+            )}
+            {saveResponse?.status === "saved" && (
+              <p>Saved to your encrypted library on this device.</p>
+            )}
+            {saveResponse?.status === "already_present" && (
+              <p>
+                This activity is already in your library. No duplicate was
+                added.
+              </p>
+            )}
+            {saveResponse?.status === "error" && (
+              <p role="alert">{saveErrorMessage(saveResponse.code)}</p>
+            )}
+            {saveCommandFailed && (
+              <p role="alert">
+                Effortline could not confirm the save. Try again. Retrying will
+                not create a duplicate.
+              </p>
+            )}
+            {!saving && !saveResponse && !saveCommandFailed && (
+              <p className="save-note">
+                This preview has not been saved. Select “Save to library” to
+                keep an encrypted copy.
+              </p>
+            )}
           </div>
         )}
       </section>
-      <p className="save-note">
-        Preview only. This activity has not been saved.
-      </p>
     </main>
   );
 }

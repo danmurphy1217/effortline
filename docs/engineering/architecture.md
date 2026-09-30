@@ -35,3 +35,11 @@ The first app runs only on Apple Silicon macOS. This keeps packaging and quality
 - [Testing strategy](testing.md)
 - [How to make a safe change](delivery.md)
 - [Project status and setup](../../README.md)
+
+## Current desktop save boundary
+
+The desktop shell retains at most one FIT preview, bounded by the core file-size limit. It keeps the validated source bytes in memory and returns a random preview ID with the summary. The version-1 save command accepts that ID and a request version. It cannot accept a filesystem path, file contents, or a secret. Choosing another file or cancelling clears the previous preview. The shell serializes preview and save operations; blocking file, Keychain, and database work runs outside the UI thread.
+
+The library lives in the app's local data directory under `library/`. The macOS adapter uses the default Keychain with service `com.danmurphy.effortline.library.v1` and account `primary`. It adds a random 32-byte key only if no key or library exists. A duplicate Keychain insertion retrieves the existing key. Denied access, malformed keys, and missing keys for existing libraries fail without replacing the secret. The core receives it through `LibrarySecretProvider`.
+
+The macOS-only [`security-framework`](https://docs.rs/security-framework/3.7.0/security_framework/) dependency provides native Keychain calls under MIT or Apache-2.0. Default features are disabled. This avoids custom unsafe OS bindings and adds no network access. Keychain reads and writes are confined to the desktop adapter. The linked system framework adds no separately bundled runtime. Core encryption and SQLCipher dependencies remain platform-neutral; cross-platform storage and signed-app Keychain behavior still require release validation.

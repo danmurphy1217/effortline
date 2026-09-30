@@ -49,4 +49,5 @@ jobs:
       - run: pnpm --dir apps/desktop lint
       - run: pnpm --dir apps/desktop format:check
       - run: pnpm --dir apps/desktop build
+      - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
