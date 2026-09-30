@@ -66,7 +66,7 @@ button:focus-visible {
 
 button:disabled {
   opacity: 0.65;
-  cursor: wait;
+  cursor: default;
 }
 
 .result {
@@ -112,4 +112,38 @@ button:disabled {
     grid-template-columns: 1fr;
     gap: 0.2rem;
   }
+}
+
+.save-complete {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  margin-top: 1.5rem;
+  padding: 1.2rem;
+  border: 1px solid #50735d;
+  border-radius: 0.75rem;
+  background: #19382b;
+}
+
+.save-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 1.8rem;
+  height: 1.8rem;
+  border-radius: 50%;
+  background: #a9e9bd;
+  color: #10221d;
+  font-weight: 800;
+}
+
+.save-complete h3 {
+  margin: 0 0 0.3rem;
+  color: #c6f4d2;
+  font-size: 1.05rem;
+}
+
+.save-complete p {
+  margin: 0;
+  color: #bed0c4;
+  font-size: 0.95rem;
 }

@@ -35,3 +35,31 @@ The first app runs only on Apple Silicon macOS. This keeps packaging and quality
 - [Testing strategy](testing.md)
 - [How to make a safe change](delivery.md)
 - [Project status and setup](../../README.md)
+
+## Current desktop save boundary
+
+The desktop shell retains at most one FIT preview, bounded by the core file-size limit. It keeps the validated source bytes in memory and returns a random preview ID with the summary. The version-1 save command accepts that ID and a request version. It cannot accept a filesystem path, file contents, or a secret. Choosing another file or cancelling clears the previous preview. The shell serializes preview and save operations; blocking file, Keychain, and database work runs outside the UI thread.
+
+The library lives in the app's local data directory under `library/`. The macOS adapter uses the default Keychain with service `com.danmurphy.effortline.library.v1` and account `primary`. It adds a random 32-byte key only if no key or library exists. A duplicate Keychain insertion retrieves the existing key. Denied access, malformed keys, and missing keys for existing libraries fail without replacing the secret. The core receives it through `LibrarySecretProvider`.
+
+The macOS-only [`security-framework`](https://docs.rs/security-framework/3.7.0/security_framework/) dependency provides native Keychain calls under MIT or Apache-2.0. Default features are disabled. This avoids custom unsafe OS bindings and adds no network access. Keychain reads and writes are confined to the desktop adapter. The linked system framework adds no separately bundled runtime. Core encryption and SQLCipher dependencies remain platform-neutral; cross-platform storage and signed-app Keychain behavior still require release validation.
+
+Save progress uses a versioned Tauri channel. The core reports fixed storage stages and elapsed durations through a callback; it has no UI or OS dependency. Tauri maps secret access to the Keychain stage. Progress carries no activity bytes, paths, or secret values. A closed progress channel does not abort an in-flight durable save. Only the final command response marks the UI as saved.
+
+### Library session and recovery
+
+Tauri retains one `ActivityLibrary` behind a mutex after the first successful lookup of an existing library or successful save. It holds the core's exclusive library lock for that session. Subsequent saves reuse the connection and derived encryption keys; they do not reload Keychain or repeat the full object recovery scan. The core still owns recovery. A failed import drops the connection and lock, so the next attempt opens and recovers again. Every new app process also opens and recovers before writing. There is no persistent flag that skips recovery after a crash. File sync and database commit ordering are unchanged.
+
+The library remains unlocked until the app fully quits or a storage operation fails. Locking Keychain after the first unlock does not revoke this in-memory library session. Quit the app before testing Keychain denial, moving the library, or changing its key. A second app process cannot open the same locked library.
+
+### Local diagnostics
+
+The desktop shell owns device-local diagnostics. Startup, preview results, save stages, sample counts, elapsed durations, library reuse, and stable error codes use a typed allowlist. Logs never accept arbitrary strings from imported files or raw error messages. They exclude activity contents, filenames, paths, source hashes, notes, routes, and secrets. The portable core only emits progress through its callback.
+
+Logs stay on the device. There is no telemetry SDK, upload, remote endpoint, or stable user identifier. Sharing a log is an explicit user action outside this save slice. A bounded background queue decouples log writes from the UI and storage. Rotation retains two files up to 1 MiB each; a separate lock serializes log writes across processes. On macOS, the log directory is mode 0700 and files are mode 0600. These are plaintext diagnostics, not encrypted activity records. Queue drops are counted in the next record. Disk errors stop the logger and emit a fixed stderr message without failing a save. Abrupt process exit can lose queued records; this is a diagnostic aid, not an audit journal.
+
+### Saved status in the preview
+
+Once the summary is ready, the UI calls `check_preview_in_library` with the retained preview ID and version. The shell uses the canonical source identity retained with those exact bytes. The core performs an indexed lookup and authenticates only the matched original, without loading sample rows. A missing library returns not-present without creating storage or accessing Keychain. An existing library may need a Keychain prompt during preview; a successful check reuses the same locked session for later checks and saves.
+
+While checking, the preview has no Save action. A confirmed match shows **Already in your library** immediately. Lookup errors leave the saved status unknown and offer **Check library again**. The UI offers Save only after a not-present result. The save command still deduplicates atomically for other clients or retries. Library-check start, progress, and result events use the same local diagnostic safeguards.

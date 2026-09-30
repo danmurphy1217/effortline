@@ -45,8 +45,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm --dir apps/desktop install --frozen-lockfile
+      - run: pnpm --dir apps/desktop test
       - run: pnpm --dir apps/desktop check
       - run: pnpm --dir apps/desktop lint
       - run: pnpm --dir apps/desktop format:check
       - run: pnpm --dir apps/desktop build
+      - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
