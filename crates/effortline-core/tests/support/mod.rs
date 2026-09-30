@@ -144,3 +144,22 @@ pub fn synthetic_fit_with_session_end(
 
     fit_file(&data, 12)
 }
+
+/// Synthetic unknown messages pad the file without adding activity samples.
+pub fn synthetic_fit_sized(sample_count: usize, total_bytes: usize) -> Vec<u8> {
+    let bytes = synthetic_fit(4, true, sample_count);
+    let mut data = bytes[12..bytes.len() - 2].to_vec();
+    let mut remaining = total_bytes - bytes.len();
+    while remaining > 0 {
+        let mut size = 255.min(remaining - 10);
+        let tail = remaining - size - 10;
+        if tail > 0 && tail < 11 {
+            size -= 11 - tail;
+        }
+        data.extend(definition(3, 65000, &[(0, size as u8, 0x0d)]));
+        data.push(3);
+        data.extend(vec![0; size]);
+        remaining -= size + 10;
+    }
+    fit_file(&data, 12)
+}

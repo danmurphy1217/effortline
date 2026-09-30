@@ -1,11 +1,76 @@
 use crate::fit_preview::{PendingPreview, PreviewState};
 use crate::library_secret::KeychainSecret;
 use effortline_core::library::{
-    ActivityLibrary, ImportStatus, LibraryError, LibrarySecretProvider,
+    ActivityLibrary, ImportStatus, LibraryError, LibraryProgress, LibrarySecretProvider,
+    LibraryStage,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tauri::Manager;
+use tauri::{ipc::Channel, Manager};
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SaveStage {
+    KeychainAccess,
+    OpenRecovery,
+    FitParsing,
+    DuplicateCheck,
+    Encryption,
+    FileWriteSync,
+    SampleInserts,
+    DatabaseCommit,
+}
+
+impl From<LibraryStage> for SaveStage {
+    fn from(stage: LibraryStage) -> Self {
+        match stage {
+            LibraryStage::SecretAccess => Self::KeychainAccess,
+            LibraryStage::OpenRecovery => Self::OpenRecovery,
+            LibraryStage::FitParsing => Self::FitParsing,
+            LibraryStage::DuplicateCheck => Self::DuplicateCheck,
+            LibraryStage::Encryption => Self::Encryption,
+            LibraryStage::FileWriteSync => Self::FileWriteSync,
+            LibraryStage::SampleInserts => Self::SampleInserts,
+            LibraryStage::DatabaseCommit => Self::DatabaseCommit,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum SaveProgress {
+    Started {
+        version: u8,
+        stage: SaveStage,
+    },
+    Finished {
+        version: u8,
+        stage: SaveStage,
+        elapsed_ms: f64,
+        succeeded: bool,
+    },
+}
+
+impl From<LibraryProgress> for SaveProgress {
+    fn from(event: LibraryProgress) -> Self {
+        match event {
+            LibraryProgress::Started(stage) => Self::Started {
+                version: 1,
+                stage: stage.into(),
+            },
+            LibraryProgress::Finished {
+                stage,
+                elapsed,
+                succeeded,
+            } => Self::Finished {
+                version: 1,
+                stage: stage.into(),
+                elapsed_ms: elapsed.as_secs_f64() * 1000.0,
+                succeeded,
+            },
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +135,7 @@ impl SaveResponse {
 pub(super) async fn save_preview_to_library(
     app: tauri::AppHandle,
     request: SaveRequest,
+    on_progress: Channel<SaveProgress>,
 ) -> SaveResponse {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<PreviewState>();
@@ -85,17 +151,37 @@ pub(super) async fn save_preview_to_library(
             service: "com.danmurphy.effortline.library.v1",
             account: "primary",
         };
-        save_pending_preview(pending.as_ref(), &request, &directory, &provider)
+        save_pending_preview_with_progress(
+            pending.as_ref(),
+            &request,
+            &directory,
+            &provider,
+            &mut |event| {
+                // A closed UI must not abort an in-flight durable write.
+                let _ = on_progress.send(SaveProgress::from(event));
+            },
+        )
     })
     .await
     .unwrap_or_else(|_| SaveResponse::error(SaveError::SaveFailed))
 }
 
+#[cfg(test)]
 fn save_pending_preview(
     pending: Option<&PendingPreview>,
     request: &SaveRequest,
     directory: &Path,
     provider: &impl LibrarySecretProvider,
+) -> SaveResponse {
+    save_pending_preview_with_progress(pending, request, directory, provider, &mut |_| {})
+}
+
+fn save_pending_preview_with_progress(
+    pending: Option<&PendingPreview>,
+    request: &SaveRequest,
+    directory: &Path,
+    provider: &impl LibrarySecretProvider,
+    report: &mut impl FnMut(LibraryProgress),
 ) -> SaveResponse {
     if request.version != 1 {
         return SaveResponse::error(SaveError::UnsupportedRequest);
@@ -103,8 +189,8 @@ fn save_pending_preview(
     let Some(pending) = pending.filter(|preview| preview.id == request.preview_id) else {
         return SaveResponse::error(SaveError::PreviewExpired);
     };
-    match ActivityLibrary::open(directory, provider)
-        .and_then(|mut library| library.import_fit_bytes(&pending.bytes))
+    match ActivityLibrary::open_with_progress(directory, provider, report)
+        .and_then(|mut library| library.import_fit_bytes_with_progress(&pending.bytes, report))
     {
         Ok(result) => match result.status {
             ImportStatus::Saved => SaveResponse::Saved { version: 1 },
@@ -243,6 +329,52 @@ mod tests {
             serde_json::json!({"version":1,"preview_id":request.preview_id,"path":"untrusted"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn keychain_stage_reaches_client_before_secret_access_returns() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        struct WaitingSecret(mpsc::Receiver<()>);
+        impl LibrarySecretProvider for WaitingSecret {
+            fn load_secret(&self) -> Result<LibrarySecret, SecretUnavailable> {
+                self.0.recv_timeout(Duration::from_secs(5)).unwrap();
+                Err(SecretUnavailable)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("library");
+        let (pending, request) = preview(&synthetic_fit(true));
+        let (release, wait) = mpsc::channel();
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            save_pending_preview_with_progress(
+                pending.as_ref(),
+                &request,
+                &path,
+                &WaitingSecret(wait),
+                &mut |event| {
+                    send.send(serde_json::to_value(SaveProgress::from(event)).unwrap())
+                        .unwrap()
+                },
+            )
+        });
+        assert_eq!(
+            receive.recv_timeout(Duration::from_secs(5)).unwrap(),
+            serde_json::json!({"version":1,"status":"started","stage":"keychain_access"})
+        );
+        assert!(!worker.is_finished());
+        release.send(()).unwrap();
+        assert_eq!(
+            worker.join().unwrap(),
+            SaveResponse::error(SaveError::LibrarySecretUnavailable)
+        );
+        let finished = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(finished["stage"], "keychain_access");
+        assert_eq!(finished["succeeded"], false);
+        assert!(receive.try_recv().is_err());
+        assert!(!directory.path().join("library").exists());
     }
 
     #[cfg(target_os = "macos")]

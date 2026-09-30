@@ -14,12 +14,53 @@ use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 const SCHEMA_VERSION: i64 = 1;
 const OBJECT_MAGIC: &[u8; 6] = b"ELFIT1";
 const NONCE_BYTES: usize = 24;
 const OBJECT_OVERHEAD: usize = OBJECT_MAGIC.len() + NONCE_BYTES + 16;
+
+/// Real storage boundaries. Observers must return promptly and must not access the library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryStage {
+    SecretAccess,
+    OpenRecovery,
+    FitParsing,
+    DuplicateCheck,
+    Encryption,
+    FileWriteSync,
+    SampleInserts,
+    DatabaseCommit,
+}
+
+/// Durations describe completed work, including failed stages. They contain no athlete data.
+#[derive(Debug, Clone, Copy)]
+pub enum LibraryProgress {
+    Started(LibraryStage),
+    Finished {
+        stage: LibraryStage,
+        elapsed: Duration,
+        succeeded: bool,
+    },
+}
+
+fn measure<T>(
+    stage: LibraryStage,
+    report: &mut impl FnMut(LibraryProgress),
+    work: impl FnOnce() -> Result<T, LibraryError>,
+) -> Result<T, LibraryError> {
+    report(LibraryProgress::Started(stage));
+    let start = Instant::now();
+    let result = work();
+    report(LibraryProgress::Finished {
+        stage,
+        elapsed: start.elapsed(),
+        succeeded: result.is_ok(),
+    });
+    result
+}
 
 /// A 256-bit random secret supplied by the host. The core never selects a secret store.
 pub struct LibrarySecret(Zeroizing<[u8; 32]>);
@@ -114,69 +155,97 @@ impl ActivityLibrary {
         directory: impl AsRef<Path>,
         provider: &impl LibrarySecretProvider,
     ) -> Result<Self, LibraryError> {
-        let secret = provider
-            .load_secret()
-            .map_err(|_| LibraryError::SecretUnavailable)?;
-        let database_key = derive_key(&secret.0, b"effortline/sqlcipher/v1")?;
-        let object_key = derive_key(&secret.0, b"effortline/objects/v1")?;
-        let directory = directory.as_ref();
-        fs::create_dir_all(directory)?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(directory.join("library.lock"))?;
-        lock.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => LibraryError::Busy,
-            std::fs::TryLockError::Error(error) => LibraryError::Io(error),
+        Self::open_with_progress(directory, provider, &mut |_| {})
+    }
+
+    pub fn open_with_progress(
+        directory: impl AsRef<Path>,
+        provider: &impl LibrarySecretProvider,
+        report: &mut impl FnMut(LibraryProgress),
+    ) -> Result<Self, LibraryError> {
+        let secret = measure(LibraryStage::SecretAccess, report, || {
+            provider
+                .load_secret()
+                .map_err(|_| LibraryError::SecretUnavailable)
         })?;
+        measure(LibraryStage::OpenRecovery, report, || {
+            let database_key = derive_key(&secret.0, b"effortline/sqlcipher/v1")?;
+            let object_key = derive_key(&secret.0, b"effortline/objects/v1")?;
+            let directory = directory.as_ref();
+            fs::create_dir_all(directory)?;
+            let lock = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(directory.join("library.lock"))?;
+            lock.try_lock().map_err(|error| match error {
+                std::fs::TryLockError::WouldBlock => LibraryError::Busy,
+                std::fs::TryLockError::Error(error) => LibraryError::Io(error),
+            })?;
 
-        let objects = directory.join("objects");
-        let database_path = directory.join("library.sqlite3");
-        let existing = database_path.exists();
-        if !existing && objects.exists() && fs::read_dir(&objects)?.next().is_some() {
-            return Err(LibraryError::Incomplete);
-        }
-        if existing && !objects.is_dir() {
-            return Err(LibraryError::Incomplete);
-        }
-        fs::create_dir_all(&objects)?;
-
-        let mut database = Connection::open(database_path)?;
-        set_database_key(&database, &database_key)?;
-        let _: String = database
-            .query_row("PRAGMA cipher_version", [], |row| row.get(0))
-            .map_err(|_| LibraryError::EncryptionUnavailable)?;
-        let version: i64 = database
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(|_| LibraryError::CannotUnlock)?;
-        if existing {
-            if version != SCHEMA_VERSION {
-                return Err(LibraryError::UnsupportedSchema);
+            let objects = directory.join("objects");
+            let database_path = directory.join("library.sqlite3");
+            let existing = database_path.exists();
+            if !existing && objects.exists() && fs::read_dir(&objects)?.next().is_some() {
+                return Err(LibraryError::Incomplete);
             }
-        } else {
-            create_schema(&mut database)?;
-        }
-        database.execute_batch(
+            if existing && !objects.is_dir() {
+                return Err(LibraryError::Incomplete);
+            }
+            fs::create_dir_all(&objects)?;
+
+            let mut database = Connection::open(database_path)?;
+            set_database_key(&database, &database_key)?;
+            let _: String = database
+                .query_row("PRAGMA cipher_version", [], |row| row.get(0))
+                .map_err(|_| LibraryError::EncryptionUnavailable)?;
+            let version: i64 = database
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|_| LibraryError::CannotUnlock)?;
+            if existing {
+                if version != SCHEMA_VERSION {
+                    return Err(LibraryError::UnsupportedSchema);
+                }
+            } else {
+                create_schema(&mut database)?;
+            }
+            database.execute_batch(
             "PRAGMA foreign_keys = ON; PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;",
         )?;
-        let library = Self {
-            database,
-            objects,
-            object_key,
-            _lock: lock,
-        };
-        library.recover_orphans()?;
-        Ok(library)
+            let library = Self {
+                database,
+                objects,
+                object_key,
+                _lock: lock,
+            };
+            library.recover_orphans()?;
+            Ok(library)
+        })
     }
 
     /// Import FIT bytes through the canonical importer. The same bytes return `AlreadyPresent`.
     pub fn import_fit_bytes(&mut self, bytes: &[u8]) -> Result<ImportResult, LibraryError> {
-        let activity = import_fit_activity(bytes)?;
+        self.import_fit_bytes_with_progress(bytes, &mut |_| {})
+    }
+
+    pub fn import_fit_bytes_with_progress(
+        &mut self,
+        bytes: &[u8],
+        report: &mut impl FnMut(LibraryProgress),
+    ) -> Result<ImportResult, LibraryError> {
+        let activity = measure(LibraryStage::FitParsing, report, || {
+            Ok(import_fit_activity(bytes)?)
+        })?;
         let identity = activity.source.identity.clone();
-        if self.find_activity(&identity)?.is_some() {
-            // A duplicate is successful only when its immutable original is still intact.
-            self.read_original_bytes(&identity)?;
+        let present = measure(LibraryStage::DuplicateCheck, report, || {
+            if self.find_activity(&identity)?.is_some() {
+                self.read_original_bytes(&identity)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })?;
+        if present {
             return Ok(ImportResult {
                 identity,
                 status: ImportStatus::AlreadyPresent,
@@ -186,22 +255,32 @@ impl ActivityLibrary {
         let object_name = random_object_name()?;
         let temporary_path = self.objects.join(format!(".tmp-{object_name}"));
         let final_path = self.objects.join(&object_name);
-        let encrypted = encrypt_original(&self.object_key, &identity, bytes)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_path)?;
-        file.write_all(&encrypted)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary_path, &final_path)?;
-        sync_directory(&self.objects)?;
+        let encrypted = measure(LibraryStage::Encryption, report, || {
+            encrypt_original(&self.object_key, &identity, bytes)
+        })?;
+        measure(LibraryStage::FileWriteSync, report, || {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)?;
+            file.write_all(&encrypted)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary_path, &final_path)?;
+            sync_directory(&self.objects)?;
+            Ok(())
+        })?;
 
         // The object is durable before the row is committed. A failed or interrupted commit
         // leaves an orphan; open() removes it after checking committed references.
-        let transaction = self.database.transaction()?;
-        save_activity(&transaction, &activity, &object_name)?;
-        transaction.commit()?;
+        let transaction = measure(LibraryStage::SampleInserts, report, || {
+            let transaction = self.database.transaction()?;
+            save_activity(&transaction, &activity, &object_name)?;
+            Ok(transaction)
+        })?;
+        measure(LibraryStage::DatabaseCommit, report, || {
+            Ok(transaction.commit()?)
+        })?;
         Ok(ImportResult {
             identity,
             status: ImportStatus::Saved,

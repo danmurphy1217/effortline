@@ -212,3 +212,91 @@ fn rejects_future_schema_without_changing_version() {
         2
     );
 }
+
+#[test]
+#[ignore = "synthetic stage timing benchmark; run explicitly with --nocapture"]
+fn synthetic_save_stage_timings() {
+    use effortline_core::library::LibraryProgress;
+    let bytes = support::synthetic_fit_sized(1121, 120875);
+    let parsed = import_fit_activity(&bytes).unwrap();
+    assert_eq!(parsed.data.samples.len(), 1121);
+    let directory = tempdir().unwrap();
+    let mut report = |event| {
+        if let LibraryProgress::Finished {
+            stage,
+            elapsed,
+            succeeded,
+        } = event
+        {
+            println!(
+                "synthetic stage={stage:?} elapsed_ms={:.3} succeeded={succeeded}",
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
+    };
+    let mut library =
+        ActivityLibrary::open_with_progress(directory.path(), &TestSecret(1), &mut report).unwrap();
+    assert_eq!(
+        library
+            .import_fit_bytes_with_progress(&bytes, &mut report)
+            .unwrap()
+            .status,
+        ImportStatus::Saved
+    );
+}
+
+#[test]
+fn progress_tracks_real_stages_and_never_reports_commit_after_failure() {
+    use effortline_core::library::{LibraryProgress, LibraryStage};
+    let directory = tempdir().unwrap();
+    let mut events = Vec::new();
+    let mut library =
+        ActivityLibrary::open_with_progress(directory.path(), &TestSecret(1), &mut |event| {
+            events.push(event)
+        })
+        .unwrap();
+    let bytes = support::synthetic_fit(4, true, 1121);
+    library
+        .import_fit_bytes_with_progress(&bytes, &mut |event| events.push(event))
+        .unwrap();
+    let stages: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            LibraryProgress::Started(stage) => Some(*stage),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            LibraryStage::SecretAccess,
+            LibraryStage::OpenRecovery,
+            LibraryStage::FitParsing,
+            LibraryStage::DuplicateCheck,
+            LibraryStage::Encryption,
+            LibraryStage::FileWriteSync,
+            LibraryStage::SampleInserts,
+            LibraryStage::DatabaseCommit
+        ]
+    );
+    for pair in events.as_chunks::<2>().0 {
+        assert!(
+            matches!(pair, [LibraryProgress::Started(a), LibraryProgress::Finished { stage: b, succeeded: true, .. }] if a == b)
+        );
+    }
+    events.clear();
+    assert!(library
+        .import_fit_bytes_with_progress(b"synthetic invalid FIT", &mut |event| events.push(event))
+        .is_err());
+    assert!(matches!(
+        events.as_slice(),
+        [
+            LibraryProgress::Started(LibraryStage::FitParsing),
+            LibraryProgress::Finished {
+                stage: LibraryStage::FitParsing,
+                succeeded: false,
+                ..
+            }
+        ]
+    ));
+}

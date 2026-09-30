@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   requestFitPreview,
   type PreviewErrorCode,
@@ -8,6 +8,9 @@ import {
   saveFitPreview,
   saveErrorMessage,
   type SaveResponse,
+  type SaveProgress,
+  saveProgressMessage,
+  saveButtonState,
 } from "./librarySave";
 import "./App.css";
 
@@ -48,6 +51,60 @@ function formatDistance(distanceM: number | null): string {
   return `${(distanceM / 1000).toFixed(2)} km`;
 }
 
+export function SaveAction({
+  saving,
+  busy,
+  saveResponse,
+  progress,
+  elapsedSeconds,
+  onSave,
+}: {
+  saving: boolean;
+  busy: boolean;
+  saveResponse: SaveResponse | null;
+  progress: SaveProgress | null;
+  elapsedSeconds: number;
+  onSave: () => void;
+}) {
+  const saveButton = saveButtonState(saving, saveResponse);
+  return (
+    <>
+      {saveResponse?.status === "saved" ||
+      saveResponse?.status === "already_present" ? (
+        <div className="save-complete" role="status">
+          <span className="save-check" aria-hidden="true">
+            ✓
+          </span>
+          <div>
+            <h3>
+              {saveResponse.status === "saved"
+                ? "Saved to library"
+                : "Already in your library"}
+            </h3>
+            <p>
+              {saveResponse.status === "saved"
+                ? "Your activity is encrypted and stored on this device. You can close this window."
+                : "This activity was saved before. No duplicate was added."}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={busy || saveButton.disabled}
+          style={{ cursor: saveButton.cursor }}
+        >
+          {saveButton.label}
+        </button>
+      )}
+      {saving && (
+        <p role="status">{saveProgressMessage(progress, elapsedSeconds)}</p>
+      )}
+    </>
+  );
+}
+
 function App() {
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -56,13 +113,32 @@ function App() {
   const [saveResponse, setSaveResponse] = useState<SaveResponse | null>(null);
   const [saveCommandFailed, setSaveCommandFailed] = useState(false);
 
+  const [saveProgress, setSaveProgress] = useState<{
+    event: SaveProgress;
+    startedAt: number;
+  } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!saving) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [saving]);
+
   async function saveActivity() {
     if (response?.status !== "ready" || busy || saving) return;
+    setSaveProgress(null);
     setSaving(true);
     setSaveResponse(null);
     setSaveCommandFailed(false);
     try {
-      setSaveResponse(await saveFitPreview(response.preview_id));
+      setSaveResponse(
+        await saveFitPreview(response.preview_id, (event) => {
+          const receivedAt = Date.now();
+          setNow(receivedAt);
+          setSaveProgress({ event, startedAt: receivedAt });
+        }),
+      );
     } catch {
       setSaveCommandFailed(true);
     } finally {
@@ -102,7 +178,7 @@ function App() {
         {busy ? "Opening file…" : "Choose a FIT file"}
       </button>
 
-      <section className="result" aria-live="polite" aria-busy={busy || saving}>
+      <section className="result" aria-live="polite" aria-busy={busy}>
         {busy && <p>Choose a file in the system window to see its preview.</p>}
         {response?.status === "cancelled" && (
           <p>No file was selected. No activity was saved.</p>
@@ -157,30 +233,16 @@ function App() {
                 </dd>
               </div>
             </dl>
-            <button
-              type="button"
-              onClick={() => void saveActivity()}
-              disabled={
-                busy ||
-                saving ||
-                saveResponse?.status === "saved" ||
-                saveResponse?.status === "already_present"
+            <SaveAction
+              saving={saving}
+              busy={busy}
+              saveResponse={saveResponse}
+              progress={saveProgress?.event ?? null}
+              elapsedSeconds={
+                saveProgress ? (now - saveProgress.startedAt) / 1000 : 0
               }
-            >
-              {saving ? "Saving…" : "Save to library"}
-            </button>
-            {saving && (
-              <p>Saving on this device. macOS may ask for Keychain access.</p>
-            )}
-            {saveResponse?.status === "saved" && (
-              <p>Saved to your encrypted library on this device.</p>
-            )}
-            {saveResponse?.status === "already_present" && (
-              <p>
-                This activity is already in your library. No duplicate was
-                added.
-              </p>
-            )}
+              onSave={() => void saveActivity()}
+            />
             {saveResponse?.status === "error" && (
               <p role="alert">{saveErrorMessage(saveResponse.code)}</p>
             )}
