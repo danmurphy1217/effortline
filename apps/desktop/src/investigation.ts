@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { SaveErrorCode } from "./librarySave";
 
 export type RunningEvidence = {
@@ -13,6 +13,40 @@ export type RunningEvidence = {
 };
 
 export type GeneratedExplanation = { text: string; citations: string[] };
+
+export type InvestigationStage =
+  | "opening_library"
+  | "analyzing_activities"
+  | "verifying_model"
+  | "loading_model"
+  | "generating_explanation";
+
+export type InvestigationProgress = {
+  version: 1;
+  stage: InvestigationStage;
+  elapsed_ms: number;
+};
+
+const stageMessages: Record<InvestigationStage, string> = {
+  opening_library: "Opening your encrypted activity library",
+  analyzing_activities: "Comparing your saved running activities",
+  verifying_model: "Verifying the installed model on this Mac",
+  loading_model: "Loading the local model into memory",
+  generating_explanation: "Generating a local explanation from the evidence",
+};
+
+export function investigationProgressMessage(
+  progress: InvestigationProgress | null,
+  elapsedSeconds: number,
+): string {
+  if (!progress) return "Starting your activity check…";
+  const elapsed = Math.max(0, Math.floor(elapsedSeconds));
+  const keychainHint =
+    progress.stage === "opening_library" && elapsed >= 10
+      ? " Check for a macOS Keychain permission window."
+      : "";
+  return `${stageMessages[progress.stage]} — ${elapsed} s.${keychainHint}`;
+}
 
 export type HeartRateResult =
   | {
@@ -60,10 +94,16 @@ export type RunningInvestigationResponse =
     }
   | { version: 1; status: "error"; code: SaveErrorCode };
 
-export async function askRunningChange(): Promise<RunningInvestigationResponse> {
+export async function askRunningChange(
+  onProgress: (progress: InvestigationProgress) => void,
+): Promise<RunningInvestigationResponse> {
+  const channel = new Channel<InvestigationProgress>();
+  channel.onmessage = (progress) => {
+    if (progress.version === 1) onProgress(progress);
+  };
   const response = await invoke<RunningInvestigationResponse>(
     "investigate_recent_running",
-    { request: { version: 1 } },
+    { request: { version: 1 }, progress: channel },
   );
   if (response.version !== 1)
     throw new Error("Unsupported investigation response version");

@@ -1,6 +1,7 @@
 //! Local diagnostics accept only reviewed, typed fields. Never pass raw errors or activity data.
 use crate::batch_import::{BatchCommandError, BatchFileStatus};
 use crate::fit_preview::{PreviewError, PreviewResponse};
+use crate::investigation::{InvestigationOutcome, InvestigationStage};
 use crate::library_save::{LibraryCheckResponse, SaveError, SaveProgress, SaveResponse};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
@@ -56,6 +57,15 @@ pub(super) enum Event {
         total: usize,
         cancelled: bool,
         error: Option<BatchCommandError>,
+    },
+    InvestigationStarted,
+    InvestigationStage {
+        stage: InvestigationStage,
+        elapsed_ms: f64,
+    },
+    InvestigationFinished {
+        elapsed_ms: f64,
+        outcome: InvestigationOutcome,
     },
 }
 
@@ -244,6 +254,22 @@ mod tests {
                 result: SaveResponse::Saved { version: 1 },
             },
         }
+    }
+
+    #[test]
+    fn investigation_diagnostics_only_serialize_fixed_stage_and_elapsed_time() {
+        let event = Event::InvestigationStage {
+            stage: InvestigationStage::GeneratingExplanation,
+            elapsed_ms: 1234.5,
+        };
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "event": "investigation_stage",
+                "stage": "generating_explanation",
+                "elapsed_ms": 1234.5
+            })
+        );
     }
 
     #[test]

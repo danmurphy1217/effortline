@@ -14,7 +14,9 @@ Qwen publishes the base model under Apache-2.0. The chosen quantization is a thi
 
 The app tells users to allow about 1.3 GB of free storage. The artifact is downloaded only after the user selects **Install model**. The UI streams byte progress, supports cancel and retry, and removes only the model artifact. A cancelled or incomplete `.part` file is not used. No prompt, generated text, or activity detail enters local diagnostics.
 
-The macOS debug app built for this change is about 57.9 MiB because the Metal runtime is linked into the app. The model card does not specify a minimum RAM requirement. This machine has 48 GiB, but model load, inference time, and peak memory remain unmeasured until a user chooses to install the weights and run the opt-in evaluation.
+The macOS debug app built for this change is about 57.9 MiB because the Metal runtime is linked into the app. The model card does not specify a minimum RAM requirement. On this M4 Pro with 48 GiB, the synthetic evaluation measured model-file verification at 45.2 seconds in an unoptimized debug build. Optimizing only the `sha2` dependency in dev and test profiles reduced that check to 2.3 seconds. The first Metal kernel compilation took 15.6 seconds; a warm initialization took 0.046 seconds. Model load took 471 ms and attempted generation took 771 ms in the warm synthetic run. Peak resident memory was about 1.9 GB.
+
+That synthetic run returned `InferenceFailed`, so it did not produce a validated explanation or aggregate grounding/citation scores. The measured Rust result remains the safe fallback. These are single-run local measurements, not performance guarantees. The investigation now streams fixed stage names and elapsed time to the UI and records the same typed timing markers in local diagnostics; it never logs prompts, generated text, citations, activity values, paths, or model contents.
 
 ## Evidence boundary and safe display
 
@@ -32,7 +34,7 @@ Normal CI builds the macOS runtime and tests download validation, citation valid
 cargo test -p effortline-desktop --locked evaluate_local_model_with_synthetic_investigations -- --ignored --nocapture
 ```
 
-The evaluation prints only aggregate counts for grounding, citation validity, sparse-data response, and the unsafe-advice guard. It does not print or save prompts, outputs, or activity details.
+The evaluation prints verification, model-load, and inference timings. If all cases complete, it also prints aggregate counts for grounding, citation validity, sparse-data response, and the unsafe-advice guard. It does not print or save prompts, outputs, or activity details. A failed inference stops the evaluation and reports the failure without showing generated text.
 
 ## Primary sources
 

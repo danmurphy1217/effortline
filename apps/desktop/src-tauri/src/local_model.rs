@@ -283,7 +283,15 @@ pub trait LocalModelRuntime: Send + Sync {
         &self,
         model_path: &Path,
         bounded_result: &serde_json::Value,
+        on_stage: &mut dyn FnMut(LocalModelStage),
     ) -> Result<GeneratedExplanation, LocalModelError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalModelStage {
+    Loading,
+    Generating,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, Serialize)]
@@ -491,7 +499,9 @@ mod llama_runtime {
             &self,
             model_path: &Path,
             bounded_result: &serde_json::Value,
+            on_stage: &mut dyn FnMut(LocalModelStage),
         ) -> Result<GeneratedExplanation, LocalModelError> {
+            on_stage(LocalModelStage::Loading);
             let mut backend = LlamaBackend::init().map_err(|_| LocalModelError::ModelLoadFailed)?;
             backend.void_logs();
             let params = pin!(LlamaModelParams::default().with_n_gpu_layers(99));
@@ -536,6 +546,7 @@ mod llama_runtime {
                     .add(token, index as i32, &[0], index + 1 == tokens.len())
                     .map_err(|_| LocalModelError::InferenceFailed)?;
             }
+            on_stage(LocalModelStage::Generating);
             context
                 .decode(&mut batch)
                 .map_err(|_| LocalModelError::InferenceFailed)?;
@@ -659,9 +670,14 @@ mod tests {
         let path = std::env::var_os("EFFORTLINE_LOCAL_MODEL_PATH")
             .map(PathBuf::from)
             .expect("set EFFORTLINE_LOCAL_MODEL_PATH to an installed model artifact");
+        let verification_started = std::time::Instant::now();
         assert!(
             verify_installed_model(&path),
             "model artifact verification failed"
+        );
+        eprintln!(
+            "synthetic model artifact verification: {:.1} ms",
+            verification_started.elapsed().as_secs_f64() * 1000.0
         );
         let runtime = LlamaCppRuntime;
         let compared = serde_json::json!({
@@ -686,10 +702,28 @@ mod tests {
         let mut cited = 0usize;
         let mut safe = 0usize;
         let mut insufficient = 0usize;
-        for (evidence, has_heart_rate) in cases {
-            let output = runtime
-                .explain(&path, evidence)
-                .expect("synthetic inference should run");
+        for (case_index, (evidence, has_heart_rate)) in cases.into_iter().enumerate() {
+            let mut stage_start = None;
+            let mut stage_durations = Vec::new();
+            let total_started = std::time::Instant::now();
+            let output = runtime.explain(&path, evidence, &mut |stage| {
+                let now = std::time::Instant::now();
+                if let Some((previous, previous_started)) = stage_start.replace((stage, now)) {
+                    stage_durations
+                        .push((previous, previous_started.elapsed().as_secs_f64() * 1000.0));
+                }
+            });
+            if let Some((stage, started)) = stage_start {
+                stage_durations.push((stage, started.elapsed().as_secs_f64() * 1000.0));
+            }
+            eprintln!(
+                "synthetic inference case {}: {:?}; total {:.1} ms; result {:?}",
+                case_index + 1,
+                stage_durations,
+                total_started.elapsed().as_secs_f64() * 1000.0,
+                output.as_ref().map(|_| "valid").unwrap_or("error")
+            );
+            let output = output.expect("synthetic inference should run");
             let allowed: Vec<_> = if evidence["status"] == "insufficient_data" {
                 Vec::new()
             } else {

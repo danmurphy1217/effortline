@@ -33,6 +33,8 @@ import {
 } from "./librarySave";
 import {
   askRunningChange,
+  investigationProgressMessage,
+  type InvestigationProgress,
   type RunningEvidence,
   type RunningInvestigationResponse,
 } from "./investigation";
@@ -514,6 +516,11 @@ function App() {
   const [investigationBusy, setInvestigationBusy] = useState(false);
   const [investigationResponse, setInvestigationResponse] =
     useState<RunningInvestigationResponse | null>(null);
+  const [investigationProgress, setInvestigationProgress] =
+    useState<InvestigationProgress | null>(null);
+  const [investigationStartedAt, setInvestigationStartedAt] = useState<
+    number | null
+  >(null);
   const [unsupportedQuestion, setUnsupportedQuestion] = useState(false);
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -637,10 +644,19 @@ function App() {
     }
     setUnsupportedQuestion(false);
     setAskedQuestion(RUNNING_QUESTION);
+    setInvestigationProgress(null);
+    const startedAt = Date.now();
+    setNow(startedAt);
+    setInvestigationStartedAt(startedAt);
     setInvestigationBusy(true);
     setInvestigationResponse(null);
     try {
-      setInvestigationResponse(await askRunningChange());
+      setInvestigationResponse(
+        await askRunningChange((progress) => {
+          setInvestigationProgress(progress);
+          setNow(Date.now());
+        }),
+      );
     } catch {
       setInvestigationResponse({
         version: 1,
@@ -649,14 +665,15 @@ function App() {
       });
     } finally {
       setInvestigationBusy(false);
+      setInvestigationStartedAt(null);
     }
   }
 
   useEffect(() => {
-    if (!saving && !checkingLibrary && !batchBusy) return;
+    if (!saving && !checkingLibrary && !batchBusy && !investigationBusy) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [saving, checkingLibrary, batchBusy]);
+  }, [saving, checkingLibrary, batchBusy, investigationBusy]);
 
   async function saveActivity() {
     if (
@@ -850,7 +867,7 @@ function App() {
           type="submit"
           disabled={investigationBusy || question.trim().length === 0}
         >
-          {investigationBusy ? "Checking your activities…" : "Ask"}
+          {investigationBusy ? "Working…" : "Ask"}
         </button>
         {unsupportedQuestion && (
           <p role="status">
@@ -867,7 +884,14 @@ function App() {
           <p className="user-question">{askedQuestion}</p>
           <div className="assistant-answer">
             {investigationBusy ? (
-              <p role="status">Checking saved running activities…</p>
+              <p role="status">
+                {investigationProgressMessage(
+                  investigationProgress,
+                  investigationStartedAt === null
+                    ? 0
+                    : (now - investigationStartedAt) / 1000,
+                )}
+              </p>
             ) : investigationResponse ? (
               <RunningAnswer result={investigationResponse} />
             ) : null}

@@ -1,7 +1,39 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  investigationProgressMessage,
+  type InvestigationProgress,
+} from "./investigation.ts";
 import type { RunningInvestigationResponse } from "./investigation.ts";
+
+void test("investigation progress names the active stage and elapsed time", () => {
+  const opening: InvestigationProgress = {
+    version: 1,
+    stage: "opening_library",
+    elapsed_ms: 12_000,
+  };
+  assert.match(
+    investigationProgressMessage(opening, 12),
+    /encrypted activity library/,
+  );
+  assert.match(investigationProgressMessage(opening, 12), /12 s/);
+  assert.match(
+    investigationProgressMessage(opening, 12),
+    /Keychain permission window/,
+  );
+
+  const inference: InvestigationProgress = {
+    version: 1,
+    stage: "generating_explanation",
+    elapsed_ms: 22_000,
+  };
+  assert.match(
+    investigationProgressMessage(inference, 22),
+    /local explanation from the evidence — 22 s/,
+  );
+  assert.doesNotMatch(investigationProgressMessage(inference, 22), /%/);
+});
 
 void test("running answer shows pace evidence and does not invent missing heart rate", async () => {
   const { createServer } = await import("vite");

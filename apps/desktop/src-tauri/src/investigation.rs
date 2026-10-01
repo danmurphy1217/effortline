@@ -1,3 +1,4 @@
+use crate::diagnostics::{Diagnostics, Event};
 use crate::library_save::{LibraryState, SaveError};
 use crate::library_secret::KeychainSecret;
 use crate::local_model::GeneratedExplanation;
@@ -11,9 +12,54 @@ use effortline_core::investigation::{
 use effortline_core::library::ActivityLibrary;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Instant;
+use tauri::ipc::Channel;
 use tauri::Manager;
 
 const VERSION: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InvestigationStage {
+    OpeningLibrary,
+    AnalyzingActivities,
+    VerifyingModel,
+    LoadingModel,
+    GeneratingExplanation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct InvestigationProgress {
+    version: u8,
+    stage: InvestigationStage,
+    elapsed_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InvestigationOutcome {
+    Compared,
+    InsufficientData,
+    Error,
+}
+
+fn report_stage(
+    app: &tauri::AppHandle,
+    operation: u64,
+    started: Instant,
+    progress: &Channel<InvestigationProgress>,
+    stage: InvestigationStage,
+) {
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let update = InvestigationProgress {
+        version: VERSION,
+        stage,
+        elapsed_ms,
+    };
+    let _ = progress.send(update);
+    app.state::<Diagnostics>()
+        .record(operation, Event::InvestigationStage { stage, elapsed_ms });
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -188,6 +234,7 @@ fn response(value: RunningInvestigation) -> InvestigationResponse {
 pub(super) async fn investigate_recent_running(
     app: tauri::AppHandle,
     request: InvestigationRequest,
+    progress: Channel<InvestigationProgress>,
 ) -> InvestigationResponse {
     if request.version != VERSION {
         return InvestigationResponse::Error {
@@ -195,8 +242,11 @@ pub(super) async fn investigate_recent_running(
             code: SaveError::UnsupportedRequest,
         };
     }
+    let (diagnostic_operation, started) = app
+        .state::<Diagnostics>()
+        .begin(Event::InvestigationStarted);
     let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let app = worker_app;
         let state = app.state::<LibraryState>();
         let Ok(mut session) = state.0.try_lock() else {
@@ -215,6 +265,13 @@ pub(super) async fn investigate_recent_running(
             }
         };
         if session.is_none() {
+            report_stage(
+                &app,
+                diagnostic_operation,
+                started,
+                &progress,
+                InvestigationStage::OpeningLibrary,
+            );
             match library_exists(&directory) {
                 Ok(false) => {
                     return response(RunningInvestigation::InsufficientData {
@@ -252,6 +309,13 @@ pub(super) async fn investigate_recent_running(
                 code: SaveError::SaveFailed,
             };
         };
+        report_stage(
+            &app,
+            diagnostic_operation,
+            started,
+            &progress,
+            InvestigationStage::AnalyzingActivities,
+        );
         match analyze_recent_running(library) {
             Ok(result) => {
                 let mut answer = response(result);
@@ -278,6 +342,15 @@ pub(super) async fn investigate_recent_running(
                         path.join("models")
                             .join(crate::local_model::MODEL_FILE_NAME)
                     }) {
+                        if path.exists() {
+                            report_stage(
+                                &app,
+                                diagnostic_operation,
+                                started,
+                                &progress,
+                                InvestigationStage::VerifyingModel,
+                            );
+                        }
                         let operation = app
                             .state::<crate::local_model::LocalModelState>()
                             .operation
@@ -308,7 +381,28 @@ pub(super) async fn investigate_recent_running(
                                         }
                                     }
                                 }
-                                match crate::local_model::LlamaCppRuntime.explain(&path, &bounded) {
+                                let mut report_model_stage = |stage| {
+                                    let stage = match stage {
+                                        crate::local_model::LocalModelStage::Loading => {
+                                            InvestigationStage::LoadingModel
+                                        }
+                                        crate::local_model::LocalModelStage::Generating => {
+                                            InvestigationStage::GeneratingExplanation
+                                        }
+                                    };
+                                    report_stage(
+                                        &app,
+                                        diagnostic_operation,
+                                        started,
+                                        &progress,
+                                        stage,
+                                    );
+                                };
+                                match crate::local_model::LlamaCppRuntime.explain(
+                                    &path,
+                                    &bounded,
+                                    &mut report_model_stage,
+                                ) {
                                     Ok(output) => match crate::local_model::validate_explanation(
                                         &output,
                                         &aliases,
@@ -383,7 +477,20 @@ pub(super) async fn investigate_recent_running(
     .unwrap_or(InvestigationResponse::Error {
         version: VERSION,
         code: SaveError::SaveFailed,
-    })
+    });
+    let outcome = match &result {
+        InvestigationResponse::Compared { .. } => InvestigationOutcome::Compared,
+        InvestigationResponse::InsufficientData { .. } => InvestigationOutcome::InsufficientData,
+        InvestigationResponse::Error { .. } => InvestigationOutcome::Error,
+    };
+    app.state::<Diagnostics>().record(
+        diagnostic_operation,
+        Event::InvestigationFinished {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            outcome,
+        },
+    );
+    result
 }
 
 fn library_exists(directory: &Path) -> Result<bool, SaveError> {
