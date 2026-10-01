@@ -52,6 +52,9 @@ void test("running answer shows pace evidence and does not invent missing heart 
         minimum_samples_per_run: 10,
         minimum_coverage_percent: 50,
       },
+      device_history: "missing",
+      explanation: null,
+      explanation_error: null,
     };
     const html = renderToStaticMarkup(createElement(RunningAnswer, { result }));
     assert.match(html, /5:00\/km/);

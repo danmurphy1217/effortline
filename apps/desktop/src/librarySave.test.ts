@@ -69,6 +69,14 @@ void test("batch FIT and storage failures have useful safe messages", () => {
   assert.match(batchFileErrorMessage("fit_corrupt"), /checksum/);
   assert.match(batchFileErrorMessage("fit_too_large"), /16 MiB/);
   assert.match(batchFileErrorMessage("library_secret_unavailable"), /Keychain/);
+  assert.match(
+    batchFileErrorMessage("library_secret_unavailable"),
+    /Always Allow/,
+  );
+  assert.match(
+    batchFileErrorMessage("library_secret_unavailable"),
+    /Choose files to retry/,
+  );
   assert.match(batchFileErrorMessage("file_read_failed"), /file access/);
   assert.match(
     batchCommandErrorMessage("randomness_unavailable"),
@@ -86,7 +94,7 @@ void test("rendered completed states replace the save action and active progress
     appType: "custom",
   });
   try {
-    const { BatchFileList, BatchProgressView, SaveAction } =
+    const { BatchFileList, BatchProgressView, BatchRetryAction, SaveAction } =
       (await server.ssrLoadModule("/src/App.tsx")) as typeof import("./App");
     for (const status of [
       "already_present",
@@ -198,6 +206,53 @@ void test("rendered completed states replace the save action and active progress
     assert.match(batchHtml, /20:34/);
     assert.match(batchHtml, /10.00 km/);
     assert.match(batchHtml, /500/);
+    const retryHtml = renderToStaticMarkup(
+      createElement(BatchRetryAction, {
+        files: [
+          {
+            index: 1,
+            name: "keychain-blocked.fit",
+            status: "failed",
+            code: "library_secret_unavailable",
+            activity: null,
+          },
+          {
+            index: 2,
+            name: "not-started.fit",
+            status: "not_imported",
+            code: "library_secret_unavailable",
+            activity: null,
+          },
+        ],
+        disabled: false,
+        onRetry: () => {},
+      }),
+    );
+    assert.match(retryHtml, /Choose files to retry/);
+    assert.match(retryHtml, /will not be added again/);
+    const noRetryHtml = renderToStaticMarkup(
+      createElement(BatchRetryAction, {
+        files: [
+          {
+            index: 1,
+            name: "saved.fit",
+            status: "saved",
+            code: null,
+            activity: null,
+          },
+          {
+            index: 2,
+            name: "duplicate.fit",
+            status: "already_present",
+            code: null,
+            activity: null,
+          },
+        ],
+        disabled: false,
+        onRetry: () => {},
+      }),
+    );
+    assert.equal(noRetryHtml, "");
     const fileProgressHtml = renderToStaticMarkup(
       createElement(BatchProgressView, {
         processedFiles: 1,

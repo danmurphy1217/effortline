@@ -12,6 +12,8 @@ export type RunningEvidence = {
   median_heart_rate_bpm: number | null;
 };
 
+export type GeneratedExplanation = { text: string; citations: string[] };
+
 export type HeartRateResult =
   | {
       status: "available";
@@ -39,6 +41,15 @@ export type RunningInvestigationResponse =
         change_percent: number;
       };
       heart_rate: HeartRateResult;
+      device_history: "consistent" | "mixed" | "missing" | "mixed_or_missing";
+      explanation: GeneratedExplanation | null;
+      explanation_error:
+        | "verification_failed"
+        | "install_in_progress"
+        | "location_unavailable"
+        | "model_load_failed"
+        | "inference_failed"
+        | null;
     }
   | {
       version: 1;

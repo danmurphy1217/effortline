@@ -17,6 +17,8 @@ pub struct ActivityEvidence {
     pub sample_count: usize,
     pub heart_rate_sample_count: usize,
     pub median_heart_rate_bpm: Option<f64>,
+    /// Numeric manufacturer/product pair reported by the FIT file, when present.
+    pub device: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,12 +51,21 @@ pub enum RunningInvestigation {
         recent_runs: Vec<ActivityEvidence>,
         pace: PaceComparison,
         heart_rate: HeartRateComparison,
+        device_history: DeviceHistory,
     },
     InsufficientData {
         eligible_runs: usize,
         required_runs: usize,
         reason: InsufficientDataReason,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceHistory {
+    Consistent,
+    Mixed,
+    Missing,
+    MixedOrMissing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +176,21 @@ fn compare_activities(activities: &[ImportedActivity]) -> RunningInvestigation {
             minimum_coverage_percent: 50,
         }
     };
+    let devices: Vec<_> = previous_evidence
+        .iter()
+        .chain(&recent_evidence)
+        .filter_map(|run| run.device)
+        .collect();
+    let has_missing_device = devices.len() != required_runs;
+    let has_mixed_devices = devices
+        .first()
+        .is_some_and(|first| devices.iter().any(|device| device != first));
+    let device_history = match (has_mixed_devices, has_missing_device) {
+        (false, false) => DeviceHistory::Consistent,
+        (true, false) => DeviceHistory::Mixed,
+        (false, true) => DeviceHistory::Missing,
+        (true, true) => DeviceHistory::MixedOrMissing,
+    };
 
     RunningInvestigation::Compared {
         previous_runs: previous_evidence,
@@ -175,6 +201,7 @@ fn compare_activities(activities: &[ImportedActivity]) -> RunningInvestigation {
             change_percent: (recent_pace - previous_pace) / previous_pace * 100.0,
         },
         heart_rate,
+        device_history,
     }
 }
 
@@ -206,6 +233,11 @@ fn evidence(activity: &ImportedActivity) -> ActivityEvidence {
         sample_count: activity.data.samples.len(),
         heart_rate_sample_count: heart_rates.len(),
         median_heart_rate_bpm: (!heart_rates.is_empty()).then(|| median(heart_rates)),
+        device: activity
+            .source
+            .provenance
+            .manufacturer_id
+            .zip(activity.source.provenance.product_id),
     }
 }
 
@@ -315,6 +347,7 @@ mod tests {
             recent_runs,
             pace,
             heart_rate,
+            device_history,
         } = result
         else {
             panic!("six eligible runs should be compared");
@@ -323,6 +356,7 @@ mod tests {
         assert_eq!(recent_runs.len(), 3);
         assert_eq!(previous_runs[0].source_id, format!("{:02x}", 5).repeat(32));
         assert_eq!(recent_runs[0].source_id, format!("{:02x}", 2).repeat(32));
+        assert_eq!(device_history, DeviceHistory::Missing);
         assert_eq!(pace.previous_median_seconds_per_km, 300.0);
         assert_eq!(pace.recent_median_seconds_per_km, 280.0);
         assert!((pace.change_percent - (-6.6666666667)).abs() < 0.0001);
@@ -368,5 +402,28 @@ mod tests {
                 minimum_coverage_percent: 50,
             }
         );
+    }
+
+    #[test]
+    fn mixed_device_history_is_reported_as_a_limit() {
+        let mut runs = (0..6)
+            .map(|index| {
+                run(
+                    index,
+                    1_700_000_000_000 + (5 - i64::from(index)) * 86_400_000,
+                    300.0,
+                    true,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (index, activity) in runs.iter_mut().enumerate() {
+            activity.source.provenance.manufacturer_id = Some(1);
+            activity.source.provenance.product_id = Some(if index < 3 { 10 } else { 11 });
+        }
+        let RunningInvestigation::Compared { device_history, .. } = compare_activities(&runs)
+        else {
+            panic!("six eligible runs should be compared");
+        };
+        assert_eq!(device_history, DeviceHistory::Mixed);
     }
 }

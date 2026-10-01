@@ -7,7 +7,7 @@ Effortline keeps an athlete's training history on their device. The desktop app 
 | Owner | May do | Must not do |
 | --- | --- | --- |
 | Portable Rust core | Parse source files, own canonical activity identity, store derived facts, run deterministic analysis, validate model tool requests, record evidence | Depend on Tauri, Keychain, AppKit, React, or OS-specific paths |
-| Tauri desktop shell | Select files, access the OS secret store, supervise the model process, expose typed commands, package the app | Recalculate domain measures or create a second import path |
+| Tauri desktop shell | Select files, access the OS secret store, manage the local model runtime, expose typed commands, package the app | Recalculate domain measures or create a second import path |
 | React interface | Show import state, chat, evidence, errors, and backup controls | Read raw activity files or the database directly; treat model text as trusted HTML |
 
 The target flow is `source file → validated importer → encrypted original + canonical record → versioned measures → deterministic comparison → evidence IDs → local model explanation → saved investigation`. A later provider adapter must enter at the validated importer. It cannot bypass identity, provenance, or error handling.
@@ -35,6 +35,7 @@ The first app runs only on Apple Silicon macOS. This keeps packaging and quality
 - [Testing strategy](testing.md)
 - [How to make a safe change](delivery.md)
 - [Project status and setup](../../README.md)
+- [Local model choice and safety boundary](local-model.md)
 
 ## Current desktop save boundary
 

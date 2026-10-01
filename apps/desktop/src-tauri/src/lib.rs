@@ -5,6 +5,7 @@ mod fit_preview;
 mod investigation;
 mod library_save;
 mod library_secret;
+mod local_model;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,11 +27,16 @@ pub fn run() {
         .manage(fit_preview::PreviewState::default())
         .manage(library_save::LibraryState::default())
         .manage(batch_import::BatchCancellation::default())
+        .manage(local_model::LocalModelState::default())
         .invoke_handler(tauri::generate_handler![
             fit_preview::preview_fit_activity,
             library_save::save_preview_to_library,
             library_save::check_preview_in_library,
             investigation::investigate_recent_running,
+            local_model::local_model_status,
+            local_model::install_local_model,
+            local_model::cancel_local_model_install,
+            local_model::remove_local_model,
             batch_import::import_fit_files,
             batch_import::cancel_fit_import
         ])
