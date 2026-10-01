@@ -17,6 +17,7 @@ import {
   cancelFitImport,
   batchFileErrorMessage,
   batchCommandErrorMessage,
+  type BatchActivitySummary,
   type BatchProgress,
   type BatchResponse,
   type BatchFileOutcome,
@@ -74,6 +75,17 @@ function batchOutcomeMessage(outcome: BatchFileOutcome): string {
       return outcome.code
         ? `Not imported because the library stopped: ${batchFileErrorMessage(outcome.code)}`
         : "Not imported because you cancelled the batch.";
+  }
+}
+
+function activitySportLabel(sport: BatchActivitySummary["sport"]): string {
+  switch (sport) {
+    case "running":
+      return "Running";
+    case "other":
+      return "Other activity";
+    case "unknown":
+      return "Activity";
   }
 }
 
@@ -153,19 +165,62 @@ export function BatchProgressView({
 
 export function BatchFileList({ files }: { files: BatchFileOutcome[] }) {
   return (
-    <ul className="batch-file-list">
-      {files
-        .slice()
-        .sort((a, b) => a.index - b.index)
-        .map((file) => (
-          <li key={`${file.index}-${file.name}`}>
-            <strong>
-              {file.index}. {file.name}
-            </strong>
-            <span>{batchOutcomeMessage(file)}</span>
-          </li>
-        ))}
-    </ul>
+    <div className="batch-file-table-wrap">
+      <table className="batch-file-table">
+        <caption className="visually-hidden">Imported FIT file details</caption>
+        <thead>
+          <tr>
+            <th scope="col">File</th>
+            <th scope="col">Duration</th>
+            <th scope="col">Distance</th>
+            <th scope="col">Samples</th>
+            <th scope="col">Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files
+            .slice()
+            .sort((a, b) => a.index - b.index)
+            .map((file) => (
+              <tr key={`${file.index}-${file.name}`}>
+                <th scope="row" className="batch-file-name">
+                  <span className="batch-file-order">{file.index}</span>
+                  <span className="batch-file-info">
+                    <strong>{file.name}</strong>
+                    <small>
+                      {file.activity
+                        ? activitySportLabel(file.activity.sport)
+                        : "Details unavailable"}
+                    </small>
+                  </span>
+                </th>
+                <td>
+                  {file.activity
+                    ? formatDuration(file.activity.duration_seconds)
+                    : "—"}
+                </td>
+                <td>
+                  {file.activity
+                    ? formatDistance(file.activity.distance_m)
+                    : "—"}
+                </td>
+                <td>
+                  {file.activity
+                    ? file.activity.sample_count.toLocaleString()
+                    : "—"}
+                </td>
+                <td>
+                  <span
+                    className={`batch-outcome batch-outcome-${file.status}`}
+                  >
+                    {batchOutcomeMessage(file)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

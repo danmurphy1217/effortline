@@ -148,24 +148,43 @@ void test("rendered completed states replace the save action and active progress
     const batchHtml = renderToStaticMarkup(
       createElement(BatchFileList, {
         files: [
-          { index: 1, name: "saved.fit", status: "saved", code: null },
+          {
+            index: 1,
+            name: "saved.fit",
+            status: "saved",
+            code: null,
+            activity: {
+              sport: "running",
+              duration_seconds: 1234,
+              distance_m: 10000,
+              sample_count: 500,
+            },
+          },
           {
             index: 2,
             name: "duplicate.fit",
             status: "already_present",
             code: null,
+            activity: {
+              sport: "running",
+              duration_seconds: 1234,
+              distance_m: 10000,
+              sample_count: 500,
+            },
           },
           {
             index: 3,
             name: "broken.fit",
             status: "failed",
             code: "fit_corrupt",
+            activity: null,
           },
           {
             index: 4,
             name: "later.fit",
             status: "not_imported",
             code: null,
+            activity: null,
           },
         ],
       }),
@@ -175,6 +194,10 @@ void test("rendered completed states replace the save action and active progress
     assert.match(batchHtml, /Already in your library/);
     assert.match(batchHtml, /checksum/);
     assert.match(batchHtml, /cancelled the batch/);
+    assert.match(batchHtml, /Running/);
+    assert.match(batchHtml, /20:34/);
+    assert.match(batchHtml, /10.00 km/);
+    assert.match(batchHtml, /500/);
     const fileProgressHtml = renderToStaticMarkup(
       createElement(BatchProgressView, {
         processedFiles: 1,

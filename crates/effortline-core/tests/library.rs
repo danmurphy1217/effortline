@@ -2,6 +2,7 @@
 mod support;
 
 use effortline_core::fit_import::import_fit_activity;
+use effortline_core::fit_import::ActivitySummary;
 use effortline_core::library::{
     ActivityLibrary, ImportStatus, LibraryError, LibrarySecret, LibrarySecretProvider,
     SecretUnavailable,
@@ -24,10 +25,10 @@ fn saves_reopens_and_deduplicates_encrypted_activity() {
     let mut library = ActivityLibrary::open(directory.path(), &TestSecret(1)).unwrap();
     let saved = library.import_fit_bytes(&bytes).unwrap();
     assert_eq!(saved.status, ImportStatus::Saved);
-    assert_eq!(
-        library.import_fit_bytes(&bytes).unwrap().status,
-        ImportStatus::AlreadyPresent
-    );
+    assert_eq!(saved.summary, ActivitySummary::from(&expected.data));
+    let duplicate = library.import_fit_bytes(&bytes).unwrap();
+    assert_eq!(duplicate.status, ImportStatus::AlreadyPresent);
+    assert_eq!(duplicate.summary, saved.summary);
     assert_eq!(
         library.find_activity(&saved.identity).unwrap(),
         Some(expected.clone())

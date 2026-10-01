@@ -1,10 +1,10 @@
 use crate::diagnostics::{Diagnostics, Event};
 use crate::fit_preview::{PendingPreview, PreviewState};
 use crate::library_secret::KeychainSecret;
-use effortline_core::fit_import::ImportError;
+use effortline_core::fit_import::{ActivitySummary, ImportError, Sport};
 use effortline_core::library::{
-    ActivityLibrary, ImportStatus, LibraryError, LibraryProgress, LibrarySecretProvider,
-    LibraryStage,
+    ActivityLibrary, ImportResult, ImportStatus, LibraryError, LibraryProgress,
+    LibrarySecretProvider, LibraryStage,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -394,8 +394,8 @@ fn save_in_session(
         }
     }
     match save_bytes_in_session(session, &pending.bytes, directory, provider, report) {
-        Ok(ImportStatus::Saved) => SaveResponse::Saved { version: 1 },
-        Ok(ImportStatus::AlreadyPresent) => SaveResponse::AlreadyPresent { version: 1 },
+        Ok(result) if result.status == ImportStatus::Saved => SaveResponse::Saved { version: 1 },
+        Ok(_) => SaveResponse::AlreadyPresent { version: 1 },
         Err(
             SaveError::FitTooLarge
             | SaveError::FitTooManyRecords
@@ -415,7 +415,7 @@ pub(super) fn save_bytes_in_session(
     directory: &Path,
     provider: &impl LibrarySecretProvider,
     report: &mut impl FnMut(LibraryProgress),
-) -> Result<ImportStatus, SaveError> {
+) -> Result<ImportResult, SaveError> {
     if session.is_none() {
         let library = ActivityLibrary::open_with_progress(directory, provider, report)?;
         *session = Some(library);
@@ -427,7 +427,7 @@ pub(super) fn save_bytes_in_session(
     match library.import_fit_bytes_with_progress(bytes, report) {
         Ok(result) => {
             *session = Some(library);
-            Ok(result.status)
+            Ok(result)
         }
         Err(LibraryError::Import(error)) => {
             // Parse failures happen before any library mutation. Keep a healthy session so
@@ -436,6 +436,43 @@ pub(super) fn save_bytes_in_session(
             Err(LibraryError::Import(error).into())
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BatchActivitySport {
+    Running,
+    Other,
+    Unknown,
+}
+
+impl From<Sport> for BatchActivitySport {
+    fn from(sport: Sport) -> Self {
+        match sport {
+            Sport::Running => Self::Running,
+            Sport::Other => Self::Other,
+            Sport::Unknown => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct BatchActivitySummary {
+    pub(super) sport: BatchActivitySport,
+    pub(super) duration_seconds: u64,
+    pub(super) distance_m: Option<f64>,
+    pub(super) sample_count: usize,
+}
+
+impl From<ActivitySummary> for BatchActivitySummary {
+    fn from(summary: ActivitySummary) -> Self {
+        Self {
+            sport: summary.sport.into(),
+            duration_seconds: summary.duration_seconds,
+            distance_m: summary.distance_m,
+            sample_count: summary.sample_count,
+        }
     }
 }
 

@@ -27,11 +27,19 @@ export type SaveErrorCode =
 
 export type BatchFileErrorCode = SaveErrorCode;
 
+export type BatchActivitySummary = {
+  sport: "running" | "other" | "unknown";
+  duration_seconds: number;
+  distance_m: number | null;
+  sample_count: number;
+};
+
 export type BatchFileOutcome = {
   index: number;
   name: string;
   status: "saved" | "already_present" | "failed" | "not_imported";
   code: BatchFileErrorCode | null;
+  activity: BatchActivitySummary | null;
 };
 
 export type BatchProgress =

@@ -176,25 +176,135 @@ button {
   }
 }
 
-.batch-file-list {
-  display: grid;
-  gap: 0.8rem;
-  padding: 0;
-  list-style: none;
+.batch-file-table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0 1.25rem;
+  border: 1px solid #325043;
+  border-radius: 0.65rem;
+  background: #152e25;
 }
 
-.batch-file-list li {
-  display: grid;
-  gap: 0.2rem;
-  padding: 0.8rem 1rem;
-  border: 1px solid #325043;
-  border-radius: 0.5rem;
-  background: #152e25;
+.batch-file-table {
+  width: 100%;
+  min-width: 35rem;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.86rem;
+  text-align: left;
+}
+
+.batch-file-table th,
+.batch-file-table td {
+  padding: 0.75rem 0.65rem;
+  border-bottom: 1px solid #29473b;
+  vertical-align: middle;
+}
+
+.batch-file-table thead th {
+  color: #9dc7ac;
+  font-size: 0.73rem;
+  font-weight: 650;
+}
+
+.batch-file-table th:nth-child(1) {
+  width: 29%;
+}
+
+.batch-file-table th:nth-child(2),
+.batch-file-table th:nth-child(3) {
+  width: 12%;
+}
+
+.batch-file-table th:nth-child(4) {
+  width: 11%;
+}
+
+.batch-file-table th:nth-child(5) {
+  width: 36%;
+}
+
+.batch-file-table tbody tr:last-child th,
+.batch-file-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.batch-file-table tbody tr:hover {
+  background: #19382b;
+}
+
+.batch-file-name {
+  font-weight: 400;
   overflow-wrap: anywhere;
 }
 
-.batch-file-list span {
+.batch-file-order {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: #294a3a;
   color: #bed0c4;
+  font-size: 0.72rem;
+  place-items: center;
+  vertical-align: top;
+}
+
+.batch-file-info {
+  display: inline-grid;
+  max-width: calc(100% - 1.9rem);
+  gap: 0.15rem;
+  vertical-align: top;
+}
+
+.batch-file-info small {
+  color: #9db4a5;
+  font-size: 0.74rem;
+}
+
+.batch-outcome {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.batch-outcome::before {
+  flex: 0 0 0.45rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.batch-outcome-saved {
+  color: #bce9c8;
+}
+
+.batch-outcome-already_present {
+  color: #c0d1df;
+}
+
+.batch-outcome-failed {
+  color: #f0b9ac;
+}
+
+.batch-outcome-not_imported {
+  color: #d3caa7;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 button:hover:not(:disabled) {

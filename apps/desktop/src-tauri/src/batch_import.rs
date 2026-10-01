@@ -1,5 +1,7 @@
 use crate::diagnostics::{Diagnostics, Event};
-use crate::library_save::{save_bytes_in_session, LibraryState, SaveError, SaveProgress};
+use crate::library_save::{
+    save_bytes_in_session, BatchActivitySummary, LibraryState, SaveError, SaveProgress,
+};
 use crate::library_secret::KeychainSecret;
 use effortline_core::fit_import::MAX_FIT_BYTES;
 use effortline_core::library::ImportStatus;
@@ -66,6 +68,7 @@ pub(super) struct BatchFileOutcome {
     name: String,
     status: BatchFileStatus,
     code: Option<SaveError>,
+    activity: Option<BatchActivitySummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -425,6 +428,7 @@ fn process_selected_files(
                 name: selected.name.clone(),
                 status: BatchFileStatus::NotImported,
                 code: stopped_by_library_error,
+                activity: None,
             };
             report(file_started);
             report(BatchProgress::FileFinished {
@@ -453,14 +457,19 @@ fn process_selected_files(
                 })
             })
         };
-        let (status, code) = match result {
-            Ok(ImportStatus::Saved) => (BatchFileStatus::Saved, None),
-            Ok(ImportStatus::AlreadyPresent) => (BatchFileStatus::AlreadyPresent, None),
+        let (status, code, activity) = match result {
+            Ok(result) => {
+                let status = match result.status {
+                    ImportStatus::Saved => BatchFileStatus::Saved,
+                    ImportStatus::AlreadyPresent => BatchFileStatus::AlreadyPresent,
+                };
+                (status, None, Some(result.summary.into()))
+            }
             Err(error) => {
                 if !is_file_error(error) {
                     stopped_by_library_error = Some(error);
                 }
-                (BatchFileStatus::Failed, Some(error))
+                (BatchFileStatus::Failed, Some(error), None)
             }
         };
         let outcome = BatchFileOutcome {
@@ -468,6 +477,7 @@ fn process_selected_files(
             name: selected.name.clone(),
             status,
             code,
+            activity,
         };
         report(BatchProgress::FileFinished {
             version: BATCH_VERSION,
@@ -550,7 +560,14 @@ mod tests {
             &mut |event| progress_events.push(event),
         );
         assert_eq!(first_run[0].status, BatchFileStatus::Saved);
+        let summary = first_run[0].activity.unwrap();
+        assert_eq!(
+            summary.sport,
+            crate::library_save::BatchActivitySport::Running
+        );
+        assert_eq!(summary.sample_count, 1);
         assert_eq!(first_run[1].status, BatchFileStatus::Failed);
+        assert!(first_run[1].activity.is_none());
         assert_eq!(first_run[1].code, Some(SaveError::FitUnsupported));
         assert_eq!(first_run[2].status, BatchFileStatus::Saved);
         assert_eq!(
@@ -581,6 +598,7 @@ mod tests {
 
         let retry = run(directory.path(), &files);
         assert_eq!(retry[0].status, BatchFileStatus::AlreadyPresent);
+        assert_eq!(retry[0].activity.unwrap(), summary);
         assert_eq!(retry[1].status, BatchFileStatus::Failed);
         assert_eq!(retry[2].status, BatchFileStatus::AlreadyPresent);
         let library = effortline_core::library::ActivityLibrary::open(
