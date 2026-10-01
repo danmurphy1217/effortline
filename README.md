@@ -2,7 +2,7 @@
 
 Effortline is a free, local-first desktop app for understanding endurance training history. It will use a local model to ask useful questions, but code will calculate the numbers and link each claim to source activities. There is no feed, account, subscription, or remote inference service.
 
-The desktop app can preview one FIT file and save it with an explicit “Save to library” action. The portable Rust core stores canonical records in SQLCipher and keeps encrypted copies of the original files. The macOS shell creates or retrieves a random library key from Keychain. Previewing alone does not save an activity. Library browsing, investigations, and backup are not available yet. Do not put personal activity files in this repository.
+The desktop app can preview and save FIT files, import a batch, and answer one saved-activity question: “How has my running changed recently?” Rust compares the median pace of the three newest eligible runs with the three before them and returns source citations. Heart-rate comparison needs enough recorded samples in every run; missing data stays missing. This first answer is deterministic. A local model is not connected yet. General library browsing and backup are not available. Do not put personal activity files in this repository.
 
 ## First product slice
 

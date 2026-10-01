@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   requestFitPreview,
   type PreviewErrorCode,
@@ -22,6 +22,11 @@ import {
   type BatchResponse,
   type BatchFileOutcome,
 } from "./librarySave";
+import {
+  askRunningChange,
+  type RunningEvidence,
+  type RunningInvestigationResponse,
+} from "./investigation";
 import "./App.css";
 
 const errorMessages: Record<PreviewErrorCode, string> = {
@@ -87,6 +92,122 @@ function activitySportLabel(sport: BatchActivitySummary["sport"]): string {
     case "unknown":
       return "Activity";
   }
+}
+
+const RUNNING_QUESTION = "How has my running changed recently?";
+
+function formatPace(secondsPerKm: number): string {
+  const seconds = Math.round(secondsPerKm);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}/km`;
+}
+
+function formatDate(unixMs: number): string {
+  return new Date(unixMs).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function answerText(result: RunningInvestigationResponse): string {
+  if (result.status === "insufficient_data") {
+    if (result.reason === "ambiguous_period_boundary") {
+      return "I found enough eligible runs, but activities on both sides of the comparison boundary have the same start time. I can’t tell which period they belong in, so I won’t report a pace change.";
+    }
+    return result.eligible_runs === 0
+      ? "I found no saved running activities with both distance and duration. Save at least six eligible runs to compare three recent runs with the three before them."
+      : `I found ${result.eligible_runs} eligible ${result.eligible_runs === 1 ? "run" : "runs"}. I need ${result.required_runs} to compare three recent runs with the three before them.`;
+  }
+  if (result.status !== "compared") return "";
+  const change = Math.abs(result.pace.change_percent).toFixed(1);
+  const direction =
+    result.pace.change_percent < 0
+      ? `${change}% faster`
+      : result.pace.change_percent > 0
+        ? `${change}% slower`
+        : "unchanged";
+  return `Median pace was ${formatPace(result.pace.previous_median_seconds_per_km)} in the previous runs and ${formatPace(result.pace.recent_median_seconds_per_km)} in the recent runs (${direction}).`;
+}
+
+function RunningEvidenceTable({ runs }: { runs: RunningEvidence[] }) {
+  return (
+    <div className="investigation-evidence-wrap">
+      <table className="investigation-evidence">
+        <caption className="visually-hidden">Running activity evidence</caption>
+        <thead>
+          <tr>
+            <th scope="col">Activity date</th>
+            <th scope="col">Pace</th>
+            <th scope="col">Distance</th>
+            <th scope="col">Heart rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <tr key={run.source_id}>
+              <th scope="row">
+                <span>{formatDate(run.started_at_unix_ms)}</span>
+                <details>
+                  <summary>Source citation</summary>
+                  <code>{run.source_id}</code>
+                </details>
+              </th>
+              <td>{formatPace(run.pace_seconds_per_km)}</td>
+              <td>{formatDistance(run.distance_m)}</td>
+              <td>
+                {run.median_heart_rate_bpm === null
+                  ? `Not recorded (${run.heart_rate_sample_count}/${run.sample_count})`
+                  : `${Math.round(run.median_heart_rate_bpm)} bpm (${run.heart_rate_sample_count}/${run.sample_count})`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function RunningAnswer({
+  result,
+}: {
+  result: RunningInvestigationResponse;
+}) {
+  if (result.status === "error") {
+    return <p role="alert">{saveErrorMessage(result.code)}</p>;
+  }
+  if (result.status === "insufficient_data") {
+    return <p>{answerText(result)}</p>;
+  }
+  return (
+    <div className="running-answer">
+      <p>{answerText(result)}</p>
+      <p className="evidence-intro">
+        Pace uses each run’s recorded distance and elapsed time. The two groups
+        contain three runs each.
+      </p>
+      <h3>Previous three runs</h3>
+      <RunningEvidenceTable runs={result.previous_runs} />
+      <h3>Recent three runs</h3>
+      <RunningEvidenceTable runs={result.recent_runs} />
+      {result.heart_rate.status === "available" ? (
+        <p className="heart-rate-note">
+          Median recorded heart rate:{" "}
+          {Math.round(result.heart_rate.previous_median_bpm)} bpm in the
+          previous runs and {Math.round(result.heart_rate.recent_median_bpm)}{" "}
+          bpm in the recent runs.
+        </p>
+      ) : (
+        <p className="heart-rate-note">
+          Heart-rate comparison is unavailable. Only{" "}
+          {result.heart_rate.previous_qualified_runs} of three previous runs and{" "}
+          {result.heart_rate.recent_qualified_runs} of three recent runs have at
+          least {result.heart_rate.minimum_samples_per_run} heart-rate samples,
+          covering at least {result.heart_rate.minimum_coverage_percent}% of the
+          run.
+        </p>
+      )}
+    </div>
+  );
 }
 
 function batchProgressMessage(
@@ -314,6 +435,12 @@ export function SaveAction({
 }
 
 function App() {
+  const [question, setQuestion] = useState("");
+  const [askedQuestion, setAskedQuestion] = useState<string | null>(null);
+  const [investigationBusy, setInvestigationBusy] = useState(false);
+  const [investigationResponse, setInvestigationResponse] =
+    useState<RunningInvestigationResponse | null>(null);
+  const [unsupportedQuestion, setUnsupportedQuestion] = useState(false);
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [commandFailed, setCommandFailed] = useState(false);
@@ -343,6 +470,35 @@ function App() {
   const checkingLibrary =
     libraryCheck.status === "checking" && response?.status === "ready";
   const [now, setNow] = useState(() => Date.now());
+
+  async function submitQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (investigationBusy) return;
+    if (
+      question.trim().toLocaleLowerCase() !==
+      RUNNING_QUESTION.toLocaleLowerCase()
+    ) {
+      setUnsupportedQuestion(true);
+      setAskedQuestion(null);
+      setInvestigationResponse(null);
+      return;
+    }
+    setUnsupportedQuestion(false);
+    setAskedQuestion(RUNNING_QUESTION);
+    setInvestigationBusy(true);
+    setInvestigationResponse(null);
+    try {
+      setInvestigationResponse(await askRunningChange());
+    } catch {
+      setInvestigationResponse({
+        version: 1,
+        status: "error",
+        code: "save_failed",
+      });
+    } finally {
+      setInvestigationBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!saving && !checkingLibrary && !batchBusy) return;
@@ -395,7 +551,8 @@ function App() {
   }
 
   async function chooseFitFile() {
-    if (busy || saving || checkingLibrary || batchBusy) return;
+    if (busy || saving || checkingLibrary || batchBusy || investigationBusy)
+      return;
     setBusy(true);
     setSaveResponse(null);
     setSaveCommandFailed(false);
@@ -413,7 +570,8 @@ function App() {
   }
 
   async function importMultipleFitFiles() {
-    if (busy || saving || checkingLibrary || batchBusy) return;
+    if (busy || saving || checkingLibrary || batchBusy || investigationBusy)
+      return;
     setBatchBusy(true);
     setBatchCommandFailed(false);
     setBatchResponse(null);
@@ -462,19 +620,66 @@ function App() {
 
   return (
     <main className="app-shell">
-      <p className="eyebrow">EFFORTLINE · ACTIVITY PREVIEW</p>
-      <h1>See what your FIT file contains.</h1>
+      <p className="eyebrow">EFFORTLINE · TRAINING INVESTIGATION</p>
+      <h1>Ask about your training.</h1>
       <p className="intro">
-        Choose one activity file. Effortline will read it on this device and
-        show a short summary, or import several FIT files into your encrypted
-        local library.
+        Get answers from saved activities, with the evidence behind each result.
+      </p>
+      <form
+        className="question-composer"
+        onSubmit={(event) => void submitQuestion(event)}
+      >
+        <label htmlFor="running-question">Your question</label>
+        <input
+          id="running-question"
+          value={question}
+          onChange={(event) => setQuestion(event.currentTarget.value)}
+          placeholder={RUNNING_QUESTION}
+          maxLength={160}
+          disabled={investigationBusy}
+        />
+        <button
+          type="submit"
+          disabled={investigationBusy || question.trim().length === 0}
+        >
+          {investigationBusy ? "Checking your activities…" : "Ask"}
+        </button>
+        {unsupportedQuestion && (
+          <p role="status">
+            I can answer this question right now: “{RUNNING_QUESTION}”
+          </p>
+        )}
+      </form>
+      {askedQuestion && (
+        <section
+          className="result conversation"
+          aria-live="polite"
+          aria-busy={investigationBusy}
+        >
+          <p className="user-question">{askedQuestion}</p>
+          <div className="assistant-answer">
+            {investigationBusy ? (
+              <p role="status">Checking saved running activities…</p>
+            ) : investigationResponse ? (
+              <RunningAnswer result={investigationResponse} />
+            ) : null}
+          </div>
+        </section>
+      )}
+
+      <h2 className="library-heading">Add activities to your library</h2>
+      <p className="intro">
+        FIT files stay on this device. Effortline keeps the original bytes
+        encrypted in your local library.
       </p>
       <div className="import-actions" aria-label="Choose an import action">
         <button
           className="primary-action"
           type="button"
           onClick={() => void chooseFitFile()}
-          disabled={busy || saving || checkingLibrary || batchBusy}
+          disabled={
+            busy || saving || checkingLibrary || batchBusy || investigationBusy
+          }
         >
           {checkingLibrary
             ? "Checking library…"
@@ -487,7 +692,9 @@ function App() {
           className="secondary-action"
           type="button"
           onClick={() => void importMultipleFitFiles()}
-          disabled={busy || saving || checkingLibrary || batchBusy}
+          disabled={
+            busy || saving || checkingLibrary || batchBusy || investigationBusy
+          }
         >
           {batchBusy ? "Importing FIT files…" : "Import several FIT files"}
         </button>

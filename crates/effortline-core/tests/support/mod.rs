@@ -145,6 +145,49 @@ pub fn synthetic_fit_with_session_end(
     fit_file(&data, 12)
 }
 
+/// Build a running activity with consistent session and record times for investigation tests.
+pub fn synthetic_running_activity(
+    sample_count: usize,
+    start_time: u32,
+    duration_seconds: u32,
+    distance_centimeters: u32,
+) -> Vec<u8> {
+    let mut data = definition(0, 0, &[(0, 1, 0), (1, 2, 0x84), (2, 2, 0x84), (4, 4, 0x86)]);
+    data.push(0);
+    data.push(4);
+    data.extend(1u16.to_le_bytes());
+    data.extend(42u16.to_le_bytes());
+    data.extend(start_time.to_le_bytes());
+
+    data.extend(definition(
+        1,
+        18,
+        &[(2, 4, 0x86), (5, 1, 0), (9, 4, 0x86), (253, 4, 0x86)],
+    ));
+    data.push(1);
+    data.extend(start_time.to_le_bytes());
+    data.push(1);
+    data.extend(distance_centimeters.to_le_bytes());
+    data.extend((start_time + duration_seconds).to_le_bytes());
+
+    data.extend(definition(
+        2,
+        20,
+        &[(253, 4, 0x86), (5, 4, 0x86), (6, 2, 0x84), (3, 1, 0x02)],
+    ));
+    for index in 0..sample_count {
+        let denominator = sample_count.saturating_sub(1).max(1) as u64;
+        let offset = u64::from(duration_seconds) * index as u64 / denominator;
+        let distance = u64::from(distance_centimeters) * index as u64 / denominator;
+        data.push(2);
+        data.extend((start_time + offset as u32).to_le_bytes());
+        data.extend((distance as u32).to_le_bytes());
+        data.extend(3_000u16.to_le_bytes());
+        data.push(140);
+    }
+    fit_file(&data, 12)
+}
+
 /// Synthetic unknown messages pad the file without adding activity samples.
 pub fn synthetic_fit_sized(sample_count: usize, total_bytes: usize) -> Vec<u8> {
     let bytes = synthetic_fit(4, true, sample_count);

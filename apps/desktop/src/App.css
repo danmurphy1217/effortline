@@ -43,6 +43,128 @@ p {
   color: #bed0c4;
 }
 
+.question-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem 0.85rem;
+  align-items: end;
+  margin: 1.8rem 0 1.25rem;
+  padding: 1.1rem;
+  border: 1px solid #50735d;
+  border-radius: 0.85rem;
+  background: linear-gradient(145deg, #19382b, #142d24);
+}
+
+.question-composer label {
+  grid-column: 1 / -1;
+  color: #c6f4d2;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.question-composer input {
+  min-width: 0;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #668675;
+  border-radius: 0.5rem;
+  background: #10221d;
+  color: #e7ece8;
+  font: inherit;
+}
+
+.question-composer button {
+  margin: 0;
+}
+
+.question-composer p {
+  grid-column: 1 / -1;
+  margin: 0.2rem 0 0;
+  color: #bed0c4;
+}
+
+.conversation {
+  display: grid;
+  gap: 0.8rem;
+  margin-bottom: 2rem;
+}
+
+.user-question {
+  justify-self: end;
+  max-width: 85%;
+  margin: 0;
+  padding: 0.8rem 1rem;
+  border-radius: 1rem 1rem 0.2rem 1rem;
+  background: #a9e9bd;
+  color: #10221d;
+  font-weight: 700;
+}
+
+.assistant-answer {
+  min-width: 0;
+}
+
+.assistant-answer > :first-child,
+.running-answer > :first-child {
+  margin-top: 0;
+}
+
+.evidence-intro,
+.heart-rate-note {
+  color: #bed0c4;
+}
+
+.running-answer h3 {
+  margin: 1.3rem 0 0.6rem;
+  font-size: 1rem;
+}
+
+.investigation-evidence-wrap {
+  overflow-x: auto;
+  border: 1px solid #325043;
+  border-radius: 0.65rem;
+  background: #142d24;
+}
+
+.investigation-evidence {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.investigation-evidence th,
+.investigation-evidence td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid #294a3a;
+  white-space: nowrap;
+}
+
+.investigation-evidence thead th {
+  color: #c6f4d2;
+  font-size: 0.8rem;
+}
+
+.investigation-evidence tbody tr:last-child th,
+.investigation-evidence tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.investigation-evidence details {
+  margin-top: 0.25rem;
+  color: #9dc7ac;
+  font-size: 0.75rem;
+}
+
+.investigation-evidence details code {
+  display: block;
+  max-width: 15rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.library-heading {
+  margin-top: 2rem;
+}
+
 button {
   margin-top: 1rem;
   padding: 0.8rem 1.2rem;

@@ -320,6 +320,30 @@ impl ActivityLibrary {
             .collect()
     }
 
+    /// Load the six newest running activities that have a usable distance and duration.
+    /// Original bytes are authenticated before an activity can be used as evidence.
+    pub fn recent_running_activities(&self) -> Result<Vec<ImportedActivity>, LibraryError> {
+        let mut statement = self.database.prepare(
+            "SELECT source_sha256 FROM activities \
+             WHERE sport = 1 AND total_distance_m > 0 AND end_unix_ms > start_unix_ms \
+             ORDER BY start_unix_ms DESC, source_sha256 DESC LIMIT 6",
+        )?;
+        let hashes = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        let identities = hashes
+            .map(|hash| source_identity(hash.map_err(LibraryError::Database)?))
+            .collect::<Result<Vec<_>, _>>()?;
+        identities
+            .into_iter()
+            .map(|identity| {
+                if self.read_original_bytes(&identity)?.is_none() {
+                    return Err(LibraryError::Incomplete);
+                }
+                self.find_activity(&identity)?
+                    .ok_or(LibraryError::Incomplete)
+            })
+            .collect()
+    }
+
     /// Read canonical activity facts saved in SQLCipher. Missing identity is normal.
     pub fn find_activity(
         &self,

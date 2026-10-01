@@ -2,6 +2,7 @@ mod diagnostics;
 use tauri::Manager;
 mod batch_import;
 mod fit_preview;
+mod investigation;
 mod library_save;
 mod library_secret;
 
@@ -29,6 +30,7 @@ pub fn run() {
             fit_preview::preview_fit_activity,
             library_save::save_preview_to_library,
             library_save::check_preview_in_library,
+            investigation::investigate_recent_running,
             batch_import::import_fit_files,
             batch_import::cancel_fit_import
         ])
