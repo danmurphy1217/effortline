@@ -1,6 +1,7 @@
 //! Local diagnostics accept only reviewed, typed fields. Never pass raw errors or activity data.
+use crate::batch_import::{BatchCommandError, BatchFileStatus};
 use crate::fit_preview::{PreviewError, PreviewResponse};
-use crate::library_save::{LibraryCheckResponse, SaveProgress, SaveResponse};
+use crate::library_save::{LibraryCheckResponse, SaveError, SaveProgress, SaveResponse};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -41,6 +42,20 @@ pub(super) enum Event {
     SaveFinished {
         elapsed_ms: f64,
         result: SaveResponse,
+    },
+    BatchImportStarted,
+    BatchSaveProgress {
+        progress: SaveProgress,
+    },
+    BatchFileFinished {
+        status: BatchFileStatus,
+        code: Option<SaveError>,
+    },
+    BatchImportFinished {
+        elapsed_ms: f64,
+        total: usize,
+        cancelled: bool,
+        error: Option<BatchCommandError>,
     },
 }
 

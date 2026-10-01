@@ -13,6 +13,14 @@ import {
   type SaveProgress,
   saveProgressMessage,
   saveButtonState,
+  importFitFiles,
+  cancelFitImport,
+  batchFileErrorMessage,
+  batchCommandErrorMessage,
+  type BatchActivitySummary,
+  type BatchProgress,
+  type BatchResponse,
+  type BatchFileOutcome,
 } from "./librarySave";
 import "./App.css";
 
@@ -51,6 +59,169 @@ function formatDistance(distanceM: number | null): string {
   if (distanceM === null) return "Not recorded";
   if (distanceM < 1000) return `${Math.round(distanceM).toLocaleString()} m`;
   return `${(distanceM / 1000).toFixed(2)} km`;
+}
+
+function batchOutcomeMessage(outcome: BatchFileOutcome): string {
+  switch (outcome.status) {
+    case "saved":
+      return "Saved to your encrypted library.";
+    case "already_present":
+      return "Already in your library. No duplicate was added.";
+    case "failed":
+      return outcome.code
+        ? batchFileErrorMessage(outcome.code)
+        : "Effortline could not save this file. Try again.";
+    case "not_imported":
+      return outcome.code
+        ? `Not imported because the library stopped: ${batchFileErrorMessage(outcome.code)}`
+        : "Not imported because you cancelled the batch.";
+  }
+}
+
+function activitySportLabel(sport: BatchActivitySummary["sport"]): string {
+  switch (sport) {
+    case "running":
+      return "Running";
+    case "other":
+      return "Other activity";
+    case "unknown":
+      return "Activity";
+  }
+}
+
+function batchProgressMessage(
+  progress: BatchProgress | null,
+  elapsedSeconds: number,
+): string {
+  if (!progress) return "Waiting for file selection…";
+  if (progress.status === "started") {
+    return `${progress.total} FIT ${progress.total === 1 ? "file" : "files"} selected.`;
+  }
+  if (progress.status === "file_started") {
+    return `Starting ${progress.index} of ${progress.total}: ${progress.name}`;
+  }
+  if (progress.status === "save_stage") {
+    return `${progress.index} of ${progress.total}: ${progress.name} — ${saveProgressMessage(progress.progress, elapsedSeconds)}`;
+  }
+  return `${progress.outcome.index} of ${progress.total} finished: ${progress.outcome.name}`;
+}
+
+export function BatchProgressView({
+  processedFiles,
+  totalFiles,
+  active,
+  saveProgress,
+}: {
+  processedFiles: number;
+  totalFiles: number;
+  active: boolean;
+  saveProgress: SaveProgress | null;
+}) {
+  if (totalFiles < 1) return null;
+  const sampleProgress =
+    saveProgress?.status === "samples_written" ? saveProgress : null;
+  return (
+    <div className="batch-progress-card" aria-live="polite">
+      <div className="progress-heading">
+        <strong>Batch progress</strong>
+        <span>
+          {processedFiles} of {totalFiles} files processed
+        </span>
+      </div>
+      <progress
+        className="batch-file-progress"
+        value={processedFiles}
+        max={totalFiles}
+        aria-label="Files processed"
+      />
+      {sampleProgress ? (
+        <div className="sample-progress">
+          <div className="progress-heading">
+            <span>Samples added to this file</span>
+            <span>
+              {sampleProgress.completed.toLocaleString()} of{" "}
+              {sampleProgress.total.toLocaleString()}
+            </span>
+          </div>
+          <progress
+            value={sampleProgress.completed}
+            max={sampleProgress.total}
+            aria-label="Samples added to the current file"
+          />
+          <small>Not yet committed to your library.</small>
+        </div>
+      ) : active ? (
+        <div
+          className="batch-stage-progress"
+          role="progressbar"
+          aria-label="Current file is being processed"
+        >
+          <span />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function BatchFileList({ files }: { files: BatchFileOutcome[] }) {
+  return (
+    <div className="batch-file-table-wrap">
+      <table className="batch-file-table">
+        <caption className="visually-hidden">Imported FIT file details</caption>
+        <thead>
+          <tr>
+            <th scope="col">File</th>
+            <th scope="col">Duration</th>
+            <th scope="col">Distance</th>
+            <th scope="col">Samples</th>
+            <th scope="col">Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files
+            .slice()
+            .sort((a, b) => a.index - b.index)
+            .map((file) => (
+              <tr key={`${file.index}-${file.name}`}>
+                <th scope="row" className="batch-file-name">
+                  <span className="batch-file-order">{file.index}</span>
+                  <span className="batch-file-info">
+                    <strong>{file.name}</strong>
+                    <small>
+                      {file.activity
+                        ? activitySportLabel(file.activity.sport)
+                        : "Details unavailable"}
+                    </small>
+                  </span>
+                </th>
+                <td>
+                  {file.activity
+                    ? formatDuration(file.activity.duration_seconds)
+                    : "—"}
+                </td>
+                <td>
+                  {file.activity
+                    ? formatDistance(file.activity.distance_m)
+                    : "—"}
+                </td>
+                <td>
+                  {file.activity
+                    ? file.activity.sample_count.toLocaleString()
+                    : "—"}
+                </td>
+                <td>
+                  <span
+                    className={`batch-outcome batch-outcome-${file.status}`}
+                  >
+                    {batchOutcomeMessage(file)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export function SaveAction({
@@ -149,6 +320,18 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [saveResponse, setSaveResponse] = useState<SaveResponse | null>(null);
   const [saveCommandFailed, setSaveCommandFailed] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchCommandFailed, setBatchCommandFailed] = useState(false);
+  const [batchResponse, setBatchResponse] = useState<BatchResponse | null>(
+    null,
+  );
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(
+    null,
+  );
+  const [batchProgressAt, setBatchProgressAt] = useState<number | null>(null);
+  const [batchFiles, setBatchFiles] = useState<BatchFileOutcome[]>([]);
+  const [batchId, setBatchId] = useState<string | null>(null);
+  const [batchCancelRequested, setBatchCancelRequested] = useState(false);
 
   const [saveProgress, setSaveProgress] = useState<{
     event: SaveProgress;
@@ -162,15 +345,16 @@ function App() {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (!saving && !checkingLibrary) return;
+    if (!saving && !checkingLibrary && !batchBusy) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [saving, checkingLibrary]);
+  }, [saving, checkingLibrary, batchBusy]);
 
   async function saveActivity() {
     if (
       response?.status !== "ready" ||
       busy ||
+      batchBusy ||
       saving ||
       libraryCheck.status !== "not_present"
     )
@@ -211,7 +395,7 @@ function App() {
   }
 
   async function chooseFitFile() {
-    if (busy || saving || checkingLibrary) return;
+    if (busy || saving || checkingLibrary || batchBusy) return;
     setBusy(true);
     setSaveResponse(null);
     setSaveCommandFailed(false);
@@ -228,25 +412,86 @@ function App() {
     }
   }
 
+  async function importMultipleFitFiles() {
+    if (busy || saving || checkingLibrary || batchBusy) return;
+    setBatchBusy(true);
+    setBatchCommandFailed(false);
+    setBatchResponse(null);
+    setBatchProgress(null);
+    setBatchProgressAt(null);
+    setBatchFiles([]);
+    setBatchId(null);
+    setBatchCancelRequested(false);
+    try {
+      const result = await importFitFiles((progress) => {
+        setBatchProgress(progress);
+        setBatchProgressAt(Date.now());
+        if (progress.status === "started") setBatchId(progress.batch_id);
+        if (progress.status === "file_finished") {
+          setBatchFiles((current) => [
+            ...current.filter((file) => file.index !== progress.outcome.index),
+            progress.outcome,
+          ]);
+        }
+      });
+      setBatchResponse(result);
+      if (result.status === "completed") {
+        setBatchFiles(result.files);
+        if (response?.status === "ready") {
+          void checkLibrary(response.preview_id);
+        }
+      }
+    } catch {
+      setBatchCommandFailed(true);
+    } finally {
+      setBatchBusy(false);
+      setBatchId(null);
+    }
+  }
+
+  async function cancelBatch() {
+    if (!batchId || batchCancelRequested) return;
+    setBatchCancelRequested(true);
+    try {
+      const response = await cancelFitImport(batchId);
+      if (response.status !== "accepted") setBatchCancelRequested(false);
+    } catch {
+      setBatchCancelRequested(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <p className="eyebrow">EFFORTLINE · ACTIVITY PREVIEW</p>
       <h1>See what your FIT file contains.</h1>
       <p className="intro">
         Choose one activity file. Effortline will read it on this device and
-        show a short summary.
+        show a short summary, or import several FIT files into your encrypted
+        local library.
       </p>
-      <button
-        type="button"
-        onClick={() => void chooseFitFile()}
-        disabled={busy || saving || checkingLibrary}
-      >
-        {checkingLibrary
-          ? "Checking library…"
-          : busy
-            ? "Opening file…"
-            : "Choose a FIT file"}
-      </button>
+      <div className="import-actions" aria-label="Choose an import action">
+        <button
+          className="primary-action"
+          type="button"
+          onClick={() => void chooseFitFile()}
+          disabled={busy || saving || checkingLibrary || batchBusy}
+        >
+          {checkingLibrary
+            ? "Checking library…"
+            : busy
+              ? "Opening file…"
+              : "Preview one FIT file"}
+        </button>
+
+        <button
+          className="secondary-action"
+          type="button"
+          onClick={() => void importMultipleFitFiles()}
+          disabled={busy || saving || checkingLibrary || batchBusy}
+        >
+          {batchBusy ? "Importing FIT files…" : "Import several FIT files"}
+        </button>
+      </div>
 
       <section
         className="result"
@@ -311,7 +556,7 @@ function App() {
             </dl>
             <SaveAction
               saving={saving}
-              busy={busy}
+              busy={busy || batchBusy}
               saveResponse={saveResponse}
               progress={saveProgress?.event ?? null}
               elapsedSeconds={
@@ -342,6 +587,86 @@ function App() {
           </div>
         )}
       </section>
+
+      {(batchBusy || batchResponse || batchCommandFailed) && (
+        <section
+          className="result batch-result"
+          aria-live="polite"
+          aria-busy={batchBusy}
+        >
+          <h2>Import multiple FIT files</h2>
+          {batchBusy && (
+            <>
+              <p role="status">
+                {batchProgress
+                  ? batchProgressMessage(
+                      batchProgress,
+                      batchProgressAt ? (now - batchProgressAt) / 1000 : 0,
+                    )
+                  : "Choose FIT files in the system window. Cancel there to make no changes."}
+              </p>
+              {batchId && (
+                <button
+                  type="button"
+                  onClick={() => void cancelBatch()}
+                  disabled={batchCancelRequested}
+                >
+                  {batchCancelRequested
+                    ? "Stopping after this file…"
+                    : "Cancel after this file"}
+                </button>
+              )}
+            </>
+          )}
+          {(batchProgress?.total || batchResponse?.status === "completed") && (
+            <BatchProgressView
+              processedFiles={batchFiles.length}
+              totalFiles={
+                batchProgress?.total ??
+                (batchResponse?.status === "completed"
+                  ? batchResponse.files.length
+                  : 0)
+              }
+              active={batchBusy}
+              saveProgress={
+                batchProgress?.status === "save_stage"
+                  ? batchProgress.progress
+                  : null
+              }
+            />
+          )}
+          {batchCommandFailed && (
+            <p role="alert">
+              Effortline could not start the batch import. Try again.
+            </p>
+          )}
+          {batchResponse?.status === "picker_cancelled" && (
+            <p>No files selected. Nothing was imported.</p>
+          )}
+          {batchResponse?.status === "error" && (
+            <p role="alert">{batchCommandErrorMessage(batchResponse.code)}</p>
+          )}
+          {batchFiles.length > 0 && (
+            <>
+              <BatchFileList files={batchFiles} />
+              {!batchBusy &&
+                batchFiles.some((file) => file.status === "failed") && (
+                  <p>
+                    You can select the failed files again. Files already saved
+                    will be reported as already in your library.
+                  </p>
+                )}
+              {batchResponse?.status === "completed" &&
+                batchResponse.cancelled && (
+                  <p role="status">
+                    Cancelled after the current file. Completed files remain
+                    saved.
+                  </p>
+                )}
+            </>
+          )}
+        </section>
+      )}
     </main>
   );
 }

@@ -87,6 +87,27 @@ pub struct ActivityData {
     pub samples: Vec<ActivitySample>,
 }
 
+/// Small, derived activity details for import results and previews.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivitySummary {
+    pub sport: Sport,
+    pub duration_seconds: u64,
+    pub distance_m: Option<f64>,
+    pub sample_count: usize,
+}
+
+impl From<&ActivityData> for ActivitySummary {
+    fn from(data: &ActivityData) -> Self {
+        Self {
+            sport: data.sport,
+            duration_seconds: data.end_unix_ms.saturating_sub(data.start_unix_ms).max(0) as u64
+                / 1000,
+            distance_m: data.total_distance_m,
+            sample_count: data.samples.len(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImportedActivity {
     pub source: ActivitySource,

@@ -1,8 +1,8 @@
 //! Encrypted, local activity storage. The caller owns the library directory and secret source.
 
 use crate::fit_import::{
-    import_fit_activity, ActivityData, ActivitySample, ActivitySource, FitProvenance, ImportError,
-    ImportedActivity, SourceIdentity, Sport, MAX_FIT_BYTES,
+    import_fit_activity, ActivityData, ActivitySample, ActivitySource, ActivitySummary,
+    FitProvenance, ImportError, ImportedActivity, SourceIdentity, Sport, MAX_FIT_BYTES,
 };
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
@@ -145,6 +145,7 @@ pub enum ImportStatus {
 pub struct ImportResult {
     pub identity: SourceIdentity,
     pub status: ImportStatus,
+    pub summary: ActivitySummary,
 }
 
 /// One open library. The lock prevents a second process from racing orphan recovery.
@@ -243,6 +244,7 @@ impl ActivityLibrary {
             Ok(import_fit_activity(bytes)?)
         })?;
         let identity = activity.source.identity.clone();
+        let summary = ActivitySummary::from(&activity.data);
         let present = measure(LibraryStage::DuplicateCheck, report, |_| {
             if self.find_activity(&identity)?.is_some() {
                 self.read_original_bytes(&identity)?;
@@ -255,6 +257,7 @@ impl ActivityLibrary {
             return Ok(ImportResult {
                 identity,
                 status: ImportStatus::AlreadyPresent,
+                summary,
             });
         }
 
@@ -290,6 +293,7 @@ impl ActivityLibrary {
         Ok(ImportResult {
             identity,
             status: ImportStatus::Saved,
+            summary,
         })
     }
 

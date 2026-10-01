@@ -1,7 +1,12 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
 import test from "node:test";
-import { saveButtonState, saveProgressMessage } from "./librarySave.ts";
+import {
+  batchCommandErrorMessage,
+  batchFileErrorMessage,
+  saveButtonState,
+  saveProgressMessage,
+} from "./librarySave.ts";
 
 void test("completed saves never retain a busy cursor or an actionable save label", () => {
   for (const [status, label] of [
@@ -60,6 +65,17 @@ void test("slow commits stay unconfirmed until the save response arrives", () =>
   assert.doesNotMatch(finished, /Saved to/);
 });
 
+void test("batch FIT and storage failures have useful safe messages", () => {
+  assert.match(batchFileErrorMessage("fit_corrupt"), /checksum/);
+  assert.match(batchFileErrorMessage("fit_too_large"), /16 MiB/);
+  assert.match(batchFileErrorMessage("library_secret_unavailable"), /Keychain/);
+  assert.match(batchFileErrorMessage("file_read_failed"), /file access/);
+  assert.match(
+    batchCommandErrorMessage("randomness_unavailable"),
+    /secure import session/,
+  );
+});
+
 void test("rendered completed states replace the save action and active progress", async () => {
   const { createServer } = await import("vite");
   const { createElement } = await import("react");
@@ -70,9 +86,8 @@ void test("rendered completed states replace the save action and active progress
     appType: "custom",
   });
   try {
-    const { SaveAction } = (await server.ssrLoadModule(
-      "/src/App.tsx",
-    )) as typeof import("./App");
+    const { BatchFileList, BatchProgressView, SaveAction } =
+      (await server.ssrLoadModule("/src/App.tsx")) as typeof import("./App");
     for (const status of [
       "already_present",
       "checking",
@@ -130,6 +145,96 @@ void test("rendered completed states replace the save action and active progress
       assert.match(html, /Not yet committed/);
       assert.doesNotMatch(html, /Saved to library|save-complete|%/);
     }
+    const batchHtml = renderToStaticMarkup(
+      createElement(BatchFileList, {
+        files: [
+          {
+            index: 1,
+            name: "saved.fit",
+            status: "saved",
+            code: null,
+            activity: {
+              sport: "running",
+              duration_seconds: 1234,
+              distance_m: 10000,
+              sample_count: 500,
+            },
+          },
+          {
+            index: 2,
+            name: "duplicate.fit",
+            status: "already_present",
+            code: null,
+            activity: {
+              sport: "running",
+              duration_seconds: 1234,
+              distance_m: 10000,
+              sample_count: 500,
+            },
+          },
+          {
+            index: 3,
+            name: "broken.fit",
+            status: "failed",
+            code: "fit_corrupt",
+            activity: null,
+          },
+          {
+            index: 4,
+            name: "later.fit",
+            status: "not_imported",
+            code: null,
+            activity: null,
+          },
+        ],
+      }),
+    );
+    assert.match(batchHtml, /saved\.fit/);
+    assert.match(batchHtml, /Saved to your encrypted library/);
+    assert.match(batchHtml, /Already in your library/);
+    assert.match(batchHtml, /checksum/);
+    assert.match(batchHtml, /cancelled the batch/);
+    assert.match(batchHtml, /Running/);
+    assert.match(batchHtml, /20:34/);
+    assert.match(batchHtml, /10.00 km/);
+    assert.match(batchHtml, /500/);
+    const fileProgressHtml = renderToStaticMarkup(
+      createElement(BatchProgressView, {
+        processedFiles: 1,
+        totalFiles: 3,
+        active: true,
+        saveProgress: {
+          version: 1,
+          status: "samples_written",
+          completed: 1024,
+          total: 16705,
+          elapsed_ms: 500,
+        },
+      }),
+    );
+    assert.match(fileProgressHtml, /1 of 3 files processed/);
+    assert.match(fileProgressHtml, /value="1" max="3"/);
+    assert.match(fileProgressHtml, /1,024 of 16,705/);
+    assert.match(fileProgressHtml, /value="1024" max="16705"/);
+    assert.match(fileProgressHtml, /Not yet committed/);
+    const indeterminateHtml = renderToStaticMarkup(
+      createElement(BatchProgressView, {
+        processedFiles: 0,
+        totalFiles: 2,
+        active: true,
+        saveProgress: {
+          version: 1,
+          status: "started",
+          stage: "fit_parsing",
+        },
+      }),
+    );
+    const activityBar = indeterminateHtml.match(
+      /<div class="batch-stage-progress"[^>]*>/,
+    )?.[0];
+    assert.ok(activityBar);
+    assert.match(activityBar, /aria-label="Current file is being processed"/);
+    assert.doesNotMatch(activityBar, /aria-valuenow|value=/);
     for (const [status, heading] of [
       ["saved", "Saved to library"],
       ["already_present", "Already in your library"],

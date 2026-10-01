@@ -1,6 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-type SaveErrorCode =
+export type SaveErrorCode =
   | "invalid_preview"
   | "unsupported_request"
   | "preview_expired"
@@ -15,7 +15,108 @@ type SaveErrorCode =
   | "library_randomness_unavailable"
   | "library_io"
   | "library_database"
-  | "save_failed";
+  | "save_failed"
+  | "fit_too_large"
+  | "fit_too_many_records"
+  | "fit_too_many_definitions"
+  | "fit_truncated"
+  | "fit_corrupt"
+  | "fit_unsupported"
+  | "fit_not_activity"
+  | "file_read_failed";
+
+export type BatchFileErrorCode = SaveErrorCode;
+
+export type BatchActivitySummary = {
+  sport: "running" | "other" | "unknown";
+  duration_seconds: number;
+  distance_m: number | null;
+  sample_count: number;
+};
+
+export type BatchFileOutcome = {
+  index: number;
+  name: string;
+  status: "saved" | "already_present" | "failed" | "not_imported";
+  code: BatchFileErrorCode | null;
+  activity: BatchActivitySummary | null;
+};
+
+export type BatchProgress =
+  | { version: 1; status: "started"; batch_id: string; total: number }
+  | {
+      version: 1;
+      status: "file_started";
+      batch_id: string;
+      index: number;
+      total: number;
+      name: string;
+    }
+  | {
+      version: 1;
+      status: "save_stage";
+      batch_id: string;
+      index: number;
+      total: number;
+      name: string;
+      progress: SaveProgress;
+    }
+  | {
+      version: 1;
+      status: "file_finished";
+      batch_id: string;
+      total: number;
+      outcome: BatchFileOutcome;
+    };
+
+export type BatchResponse =
+  | { version: 1; status: "picker_cancelled" }
+  | {
+      version: 1;
+      status: "error";
+      code: BatchCommandErrorCode;
+    }
+  | {
+      version: 1;
+      status: "completed";
+      batch_id: string;
+      cancelled: boolean;
+      files: BatchFileOutcome[];
+    };
+
+export type BatchCommandErrorCode =
+  | "picker_failed"
+  | "too_many_files"
+  | "library_busy"
+  | "library_location_unavailable"
+  | "randomness_unavailable";
+
+export type CancelBatchResponse =
+  | { version: 1; status: "accepted" | "not_running" }
+  | { version: 1; status: "error" };
+
+export async function importFitFiles(
+  onProgress: (progress: BatchProgress) => void,
+): Promise<BatchResponse> {
+  const channel = new Channel<BatchProgress>();
+  channel.onmessage = (progress) => {
+    if (progress.version === 1) onProgress(progress);
+  };
+  const response = await invoke<BatchResponse>("import_fit_files", {
+    onProgress: channel,
+  });
+  if (response.version !== 1)
+    throw new Error("Unsupported batch import response version");
+  return response;
+}
+
+export async function cancelFitImport(
+  batchId: string,
+): Promise<CancelBatchResponse> {
+  return invoke<CancelBatchResponse>("cancel_fit_import", {
+    request: { version: 1, batch_id: batchId },
+  });
+}
 
 export type SaveResponse =
   | { version: 1; status: "saved" | "already_present" }
@@ -166,5 +267,64 @@ export function saveErrorMessage(code: SaveErrorCode): string {
       return "The library has a missing or damaged file. Effortline could not save this activity.";
     default:
       return "Effortline could not confirm the save. Check disk space and access, then try again. Retrying the same file will not create a duplicate.";
+  }
+}
+
+export function batchFileErrorMessage(code: BatchFileErrorCode): string {
+  switch (code) {
+    case "file_read_failed":
+      return "Effortline could not read this file. Check file access and try again.";
+    case "fit_too_large":
+      return "This FIT file is larger than the 16 MiB limit.";
+    case "fit_too_many_records":
+      return "This FIT file has too many records to import.";
+    case "fit_too_many_definitions":
+      return "This FIT file has too many definitions to import.";
+    case "fit_truncated":
+      return "This FIT file is incomplete. Try another copy of the file.";
+    case "fit_corrupt":
+      return "This FIT file is damaged or failed its checksum check.";
+    case "fit_unsupported":
+      return "This FIT file uses a format or activity layout Effortline does not support yet.";
+    case "fit_not_activity":
+      return "This FIT file does not contain an activity with samples.";
+    case "library_secret_unavailable":
+      return "Effortline could not access the library key in macOS Keychain. Allow access and retry.";
+    case "library_cannot_unlock":
+    case "library_encryption_unavailable":
+      return "Effortline could not unlock the encrypted library.";
+    case "library_busy":
+      return "The library is busy. Wait for the operation to finish, then retry.";
+    case "library_unsupported_schema":
+      return "This library uses an unsupported format. Open it with the version of Effortline that created it.";
+    case "library_incomplete":
+    case "library_corrupt_original":
+      return "The library has a missing or damaged file. Effortline stopped this batch.";
+    case "library_location_unavailable":
+      return "Effortline could not locate the library. Check disk access and retry.";
+    case "library_randomness_unavailable":
+      return "Effortline could not prepare encrypted storage. Try again.";
+    case "library_io":
+    case "library_database":
+    case "save_failed":
+    case "invalid_preview":
+    case "unsupported_request":
+    case "preview_expired":
+      return "Effortline could not save this activity. Check disk space and access, then retry.";
+  }
+}
+
+export function batchCommandErrorMessage(code: BatchCommandErrorCode): string {
+  switch (code) {
+    case "too_many_files":
+      return "Choose no more than 32 FIT files at a time.";
+    case "library_busy":
+      return "The library is busy. Wait for the other operation to finish, then retry.";
+    case "library_location_unavailable":
+      return "Effortline could not locate the library. Check disk access and retry.";
+    case "randomness_unavailable":
+      return "Effortline could not start a secure import session. Try again.";
+    case "picker_failed":
+      return "Effortline could not start the file picker. Try again.";
   }
 }

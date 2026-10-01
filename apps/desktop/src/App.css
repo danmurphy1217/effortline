@@ -55,8 +55,264 @@ button {
   cursor: pointer;
 }
 
+.import-actions {
+  display: grid;
+  width: min(100%, 22rem);
+  gap: 0.85rem;
+  margin-top: 1.8rem;
+}
+
+.import-actions button {
+  width: 100%;
+  min-height: 3.1rem;
+  margin: 0;
+  text-align: left;
+}
+
+.secondary-action {
+  border: 1px solid #668675;
+  background: transparent;
+  color: #e7ece8;
+}
+
+.batch-result {
+  padding-top: 1.25rem;
+  border-top: 1px solid #325043;
+}
+
+.batch-progress-card {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+  padding: 1rem;
+  border: 1px solid #50735d;
+  border-radius: 0.75rem;
+  background: linear-gradient(145deg, #19382b, #142d24);
+}
+
+.progress-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #c6f4d2;
+  font-size: 0.9rem;
+}
+
+.progress-heading span {
+  color: #bed0c4;
+  text-align: right;
+}
+
+.batch-progress-card progress {
+  display: block;
+  width: 100%;
+  height: 0.65rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 1rem;
+  background: #294a3a;
+  color: #a9e9bd;
+  appearance: none;
+}
+
+.batch-progress-card progress::-webkit-progress-bar {
+  border-radius: 1rem;
+  background: #294a3a;
+}
+
+.batch-progress-card progress::-webkit-progress-value {
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #69d993, #c6f4d2);
+  transition: width 220ms ease-out;
+}
+
+.batch-progress-card progress::-moz-progress-bar {
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #69d993, #c6f4d2);
+}
+
+.sample-progress {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.4rem;
+}
+
+.sample-progress small {
+  color: #bed0c4;
+}
+
+.batch-stage-progress {
+  height: 0.35rem;
+  overflow: hidden;
+  border-radius: 1rem;
+  background: #294a3a;
+}
+
+.batch-stage-progress span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: 1rem;
+  background: linear-gradient(90deg, #69d993, #c6f4d2);
+  animation: batch-progress-sweep 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes batch-progress-sweep {
+  from {
+    transform: translateX(-15%);
+  }
+  to {
+    transform: translateX(165%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .batch-progress-card progress::-webkit-progress-value {
+    transition: none;
+  }
+
+  .batch-stage-progress span {
+    display: none;
+  }
+}
+
+.batch-file-table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0 1.25rem;
+  border: 1px solid #325043;
+  border-radius: 0.65rem;
+  background: #152e25;
+}
+
+.batch-file-table {
+  width: 100%;
+  min-width: 35rem;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.86rem;
+  text-align: left;
+}
+
+.batch-file-table th,
+.batch-file-table td {
+  padding: 0.75rem 0.65rem;
+  border-bottom: 1px solid #29473b;
+  vertical-align: middle;
+}
+
+.batch-file-table thead th {
+  color: #9dc7ac;
+  font-size: 0.73rem;
+  font-weight: 650;
+}
+
+.batch-file-table th:nth-child(1) {
+  width: 29%;
+}
+
+.batch-file-table th:nth-child(2),
+.batch-file-table th:nth-child(3) {
+  width: 12%;
+}
+
+.batch-file-table th:nth-child(4) {
+  width: 11%;
+}
+
+.batch-file-table th:nth-child(5) {
+  width: 36%;
+}
+
+.batch-file-table tbody tr:last-child th,
+.batch-file-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.batch-file-table tbody tr:hover {
+  background: #19382b;
+}
+
+.batch-file-name {
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.batch-file-order {
+  display: inline-grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-right: 0.35rem;
+  border-radius: 50%;
+  background: #294a3a;
+  color: #bed0c4;
+  font-size: 0.72rem;
+  place-items: center;
+  vertical-align: top;
+}
+
+.batch-file-info {
+  display: inline-grid;
+  max-width: calc(100% - 1.9rem);
+  gap: 0.15rem;
+  vertical-align: top;
+}
+
+.batch-file-info small {
+  color: #9db4a5;
+  font-size: 0.74rem;
+}
+
+.batch-outcome {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.batch-outcome::before {
+  flex: 0 0 0.45rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.batch-outcome-saved {
+  color: #bce9c8;
+}
+
+.batch-outcome-already_present {
+  color: #c0d1df;
+}
+
+.batch-outcome-failed {
+  color: #f0b9ac;
+}
+
+.batch-outcome-not_imported {
+  color: #d3caa7;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 button:hover:not(:disabled) {
   background: #c6f4d2;
+}
+
+.secondary-action:hover:not(:disabled) {
+  background: #19382b;
 }
 
 button:focus-visible {
