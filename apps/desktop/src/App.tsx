@@ -1,5 +1,14 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  cancelLocalModelInstall,
+  getLocalModelStatus,
+  installLocalModel,
+  modelErrorMessage,
+  removeLocalModel,
+  type LocalModelProgress,
+  type LocalModelStatus,
+} from "./localModel";
+import {
   requestFitPreview,
   type PreviewErrorCode,
   type PreviewResponse,
@@ -24,6 +33,8 @@ import {
 } from "./librarySave";
 import {
   askRunningChange,
+  investigationProgressMessage,
+  type InvestigationProgress,
   type RunningEvidence,
   type RunningInvestigationResponse,
 } from "./investigation";
@@ -206,6 +217,45 @@ export function RunningAnswer({
           run.
         </p>
       )}
+      {result.device_history !== "consistent" && (
+        <p className="heart-rate-note">
+          {result.device_history === "mixed"
+            ? "The FIT files report different devices. Device changes may affect this comparison."
+            : result.device_history === "missing"
+              ? "Device details are missing from these FIT files, so device changes cannot be checked."
+              : "Some device details are missing and the FIT files report different devices. Device changes may affect this comparison."}
+        </p>
+      )}
+      <p className="heart-rate-note">
+        FIT files do not identify the heart-rate sensor, so sensor changes
+        cannot be checked.
+      </p>
+      {result.explanation_error && (
+        <p role="status" className="heart-rate-note">
+          The measured result is ready, but the local explanation could not be
+          checked. {modelErrorMessage(result.explanation_error)}
+        </p>
+      )}
+      {result.explanation && (
+        <aside className="model-interpretation">
+          <h3>Possible interpretation</h3>
+          <p>{result.explanation.text}</p>
+          <small>
+            Local model output. This is a hypothesis, not a measured result.
+            Cites{" "}
+            {result.explanation.citations
+              .map((sourceId) =>
+                [...result.previous_runs, ...result.recent_runs].find(
+                  (run) => run.source_id === sourceId,
+                ),
+              )
+              .filter((run) => run !== undefined)
+              .map((run) => formatDate(run.started_at_unix_ms))
+              .join(", ")}{" "}
+            above.
+          </small>
+        </aside>
+      )}
     </div>
   );
 }
@@ -345,6 +395,32 @@ export function BatchFileList({ files }: { files: BatchFileOutcome[] }) {
   );
 }
 
+export function BatchRetryAction({
+  files,
+  disabled,
+  onRetry,
+}: {
+  files: BatchFileOutcome[];
+  disabled: boolean;
+  onRetry: () => void;
+}) {
+  const retryable = files.some(
+    (file) => file.status === "failed" || file.status === "not_imported",
+  );
+  if (!retryable) return null;
+  return (
+    <div className="batch-retry-action">
+      <p>
+        Select the failed and not imported files again. Files already saved will
+        be reported as duplicates and will not be added again.
+      </p>
+      <button type="button" onClick={onRetry} disabled={disabled}>
+        Choose files to retry
+      </button>
+    </div>
+  );
+}
+
 export function SaveAction({
   saving,
   busy,
@@ -440,6 +516,11 @@ function App() {
   const [investigationBusy, setInvestigationBusy] = useState(false);
   const [investigationResponse, setInvestigationResponse] =
     useState<RunningInvestigationResponse | null>(null);
+  const [investigationProgress, setInvestigationProgress] =
+    useState<InvestigationProgress | null>(null);
+  const [investigationStartedAt, setInvestigationStartedAt] = useState<
+    number | null
+  >(null);
   const [unsupportedQuestion, setUnsupportedQuestion] = useState(false);
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -459,6 +540,13 @@ function App() {
   const [batchFiles, setBatchFiles] = useState<BatchFileOutcome[]>([]);
   const [batchId, setBatchId] = useState<string | null>(null);
   const [batchCancelRequested, setBatchCancelRequested] = useState(false);
+  const [modelStatus, setModelStatus] = useState<LocalModelStatus | null>(null);
+  const [modelProgress, setModelProgress] = useState<LocalModelProgress | null>(
+    null,
+  );
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelInstalling, setModelInstalling] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   const [saveProgress, setSaveProgress] = useState<{
     event: SaveProgress;
@@ -470,6 +558,77 @@ function App() {
   const checkingLibrary =
     libraryCheck.status === "checking" && response?.status === "ready";
   const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    let active = true;
+    void getLocalModelStatus()
+      .then((status) => {
+        if (active) setModelStatus(status);
+      })
+      .catch((error: unknown) => {
+        if (active) setModelError(modelErrorMessage(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function installModel() {
+    if (modelBusy) return;
+    setModelBusy(true);
+    setModelInstalling(true);
+    setModelError(null);
+    try {
+      const status = await installLocalModel(setModelProgress);
+      setModelStatus(status);
+      setModelProgress({
+        downloaded_bytes: status.download_bytes,
+        total_bytes: status.download_bytes,
+        stage: "installed",
+      });
+    } catch (error) {
+      setModelError(modelErrorMessage(error));
+      setModelProgress(null);
+    } finally {
+      setModelBusy(false);
+      setModelInstalling(false);
+    }
+  }
+
+  async function cancelModelInstall() {
+    try {
+      await cancelLocalModelInstall();
+    } catch (error) {
+      setModelError(modelErrorMessage(error));
+    }
+  }
+
+  async function removeModel() {
+    if (
+      !window.confirm(
+        "Remove the local model? Your activity library will not change.",
+      )
+    )
+      return;
+    setModelBusy(true);
+    setModelError(null);
+    try {
+      await removeLocalModel();
+      setModelStatus((status) =>
+        status ? { ...status, installed: false } : status,
+      );
+      setModelProgress(null);
+      setInvestigationResponse((answer) =>
+        answer?.status === "compared"
+          ? { ...answer, explanation: null }
+          : answer,
+      );
+    } catch (error) {
+      setModelError(modelErrorMessage(error));
+    } finally {
+      setModelBusy(false);
+    }
+  }
 
   async function submitQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -485,10 +644,19 @@ function App() {
     }
     setUnsupportedQuestion(false);
     setAskedQuestion(RUNNING_QUESTION);
+    setInvestigationProgress(null);
+    const startedAt = Date.now();
+    setNow(startedAt);
+    setInvestigationStartedAt(startedAt);
     setInvestigationBusy(true);
     setInvestigationResponse(null);
     try {
-      setInvestigationResponse(await askRunningChange());
+      setInvestigationResponse(
+        await askRunningChange((progress) => {
+          setInvestigationProgress(progress);
+          setNow(Date.now());
+        }),
+      );
     } catch {
       setInvestigationResponse({
         version: 1,
@@ -497,14 +665,15 @@ function App() {
       });
     } finally {
       setInvestigationBusy(false);
+      setInvestigationStartedAt(null);
     }
   }
 
   useEffect(() => {
-    if (!saving && !checkingLibrary && !batchBusy) return;
+    if (!saving && !checkingLibrary && !batchBusy && !investigationBusy) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [saving, checkingLibrary, batchBusy]);
+  }, [saving, checkingLibrary, batchBusy, investigationBusy]);
 
   async function saveActivity() {
     if (
@@ -572,19 +741,24 @@ function App() {
   async function importMultipleFitFiles() {
     if (busy || saving || checkingLibrary || batchBusy || investigationBusy)
       return;
+    const hasPreviousResults = batchFiles.length > 0;
     setBatchBusy(true);
     setBatchCommandFailed(false);
-    setBatchResponse(null);
     setBatchProgress(null);
     setBatchProgressAt(null);
-    setBatchFiles([]);
     setBatchId(null);
     setBatchCancelRequested(false);
     try {
       const result = await importFitFiles((progress) => {
         setBatchProgress(progress);
         setBatchProgressAt(Date.now());
-        if (progress.status === "started") setBatchId(progress.batch_id);
+        if (progress.status === "started") {
+          setBatchId(progress.batch_id);
+          if (hasPreviousResults) {
+            setBatchResponse(null);
+            setBatchFiles([]);
+          }
+        }
         if (progress.status === "file_finished") {
           setBatchFiles((current) => [
             ...current.filter((file) => file.index !== progress.outcome.index),
@@ -592,12 +766,16 @@ function App() {
           ]);
         }
       });
-      setBatchResponse(result);
       if (result.status === "completed") {
+        setBatchResponse(result);
         setBatchFiles(result.files);
         if (response?.status === "ready") {
           void checkLibrary(response.preview_id);
         }
+      } else if (result.status === "picker_cancelled" && !hasPreviousResults) {
+        setBatchResponse(result);
+      } else if (result.status === "error") {
+        setBatchResponse(result);
       }
     } catch {
       setBatchCommandFailed(true);
@@ -625,6 +803,53 @@ function App() {
       <p className="intro">
         Get answers from saved activities, with the evidence behind each result.
       </p>
+      <section className="local-model-card" aria-label="Local model">
+        <div>
+          <strong>Optional local explanation</strong>
+          <p>
+            Install a model to add a possible interpretation to a measured
+            result. It runs on this Mac.
+          </p>
+          <small>
+            Download about 1.28 GB. Keep about 1.3 GB of free storage.
+          </small>
+        </div>
+        {modelInstalling ? (
+          <button type="button" onClick={() => void cancelModelInstall()}>
+            Cancel download
+          </button>
+        ) : modelBusy ? (
+          <button type="button" disabled>
+            Removing model…
+          </button>
+        ) : modelStatus?.installed ? (
+          <button type="button" onClick={() => void removeModel()}>
+            Remove model
+          </button>
+        ) : (
+          <button type="button" onClick={() => void installModel()}>
+            Install model
+          </button>
+        )}
+        {modelInstalling && modelProgress && (
+          <div className="model-download-progress" aria-live="polite">
+            <progress
+              value={modelProgress.downloaded_bytes}
+              max={modelProgress.total_bytes}
+              aria-label="Model download progress"
+            />
+            <small>
+              {modelProgress.stage === "verifying"
+                ? "Checking the model download…"
+                : `${(modelProgress.downloaded_bytes / 1_000_000).toFixed(0)} of ${(modelProgress.total_bytes / 1_000_000).toFixed(0)} MB downloaded`}
+            </small>
+          </div>
+        )}
+        {modelStatus?.installed && !modelBusy && (
+          <small>The model is installed. Explanations run on this Mac.</small>
+        )}
+        {modelError && <p role="alert">{modelError}</p>}
+      </section>
       <form
         className="question-composer"
         onSubmit={(event) => void submitQuestion(event)}
@@ -642,7 +867,7 @@ function App() {
           type="submit"
           disabled={investigationBusy || question.trim().length === 0}
         >
-          {investigationBusy ? "Checking your activities…" : "Ask"}
+          {investigationBusy ? "Working…" : "Ask"}
         </button>
         {unsupportedQuestion && (
           <p role="status">
@@ -659,7 +884,14 @@ function App() {
           <p className="user-question">{askedQuestion}</p>
           <div className="assistant-answer">
             {investigationBusy ? (
-              <p role="status">Checking saved running activities…</p>
+              <p role="status">
+                {investigationProgressMessage(
+                  investigationProgress,
+                  investigationStartedAt === null
+                    ? 0
+                    : (now - investigationStartedAt) / 1000,
+                )}
+              </p>
             ) : investigationResponse ? (
               <RunningAnswer result={investigationResponse} />
             ) : null}
@@ -856,13 +1088,13 @@ function App() {
           {batchFiles.length > 0 && (
             <>
               <BatchFileList files={batchFiles} />
-              {!batchBusy &&
-                batchFiles.some((file) => file.status === "failed") && (
-                  <p>
-                    You can select the failed files again. Files already saved
-                    will be reported as already in your library.
-                  </p>
-                )}
+              {!batchBusy && (
+                <BatchRetryAction
+                  files={batchFiles}
+                  disabled={batchBusy || busy || saving || checkingLibrary}
+                  onRetry={() => void importMultipleFitFiles()}
+                />
+              )}
               {batchResponse?.status === "completed" &&
                 batchResponse.cancelled && (
                   <p role="status">

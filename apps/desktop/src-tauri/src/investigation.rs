@@ -1,15 +1,65 @@
+use crate::diagnostics::{Diagnostics, Event};
 use crate::library_save::{LibraryState, SaveError};
 use crate::library_secret::KeychainSecret;
+use crate::local_model::GeneratedExplanation;
+#[cfg(target_os = "macos")]
+use crate::local_model::LocalModelRuntime;
 use effortline_core::investigation::{
-    investigate_recent_running as analyze_recent_running, ActivityEvidence, HeartRateComparison,
+    investigate_recent_running as analyze_recent_running, ActivityEvidence,
+    DeviceHistory as CoreDeviceHistory, HeartRateComparison,
     InsufficientDataReason as CoreInsufficientDataReason, RunningInvestigation,
 };
 use effortline_core::library::ActivityLibrary;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Instant;
+use tauri::ipc::Channel;
 use tauri::Manager;
 
 const VERSION: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InvestigationStage {
+    OpeningLibrary,
+    AnalyzingActivities,
+    VerifyingModel,
+    LoadingModel,
+    GeneratingExplanation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(super) struct InvestigationProgress {
+    version: u8,
+    stage: InvestigationStage,
+    elapsed_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum InvestigationOutcome {
+    Compared,
+    InsufficientData,
+    Error,
+}
+
+fn report_stage(
+    app: &tauri::AppHandle,
+    operation: u64,
+    started: Instant,
+    progress: &Channel<InvestigationProgress>,
+    stage: InvestigationStage,
+) {
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let update = InvestigationProgress {
+        version: VERSION,
+        stage,
+        elapsed_ms,
+    };
+    let _ = progress.send(update);
+    app.state::<Diagnostics>()
+        .record(operation, Event::InvestigationStage { stage, elapsed_ms });
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +146,9 @@ pub(super) enum InvestigationResponse {
         recent_runs: Vec<RunningEvidence>,
         pace: PaceResult,
         heart_rate: HeartRateResult,
+        device_history: DeviceHistory,
+        explanation: Option<GeneratedExplanation>,
+        explanation_error: Option<crate::local_model::LocalModelError>,
     },
     InsufficientData {
         version: u8,
@@ -116,6 +169,15 @@ pub(super) enum InsufficientDataReason {
     AmbiguousPeriodBoundary,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DeviceHistory {
+    Consistent,
+    Mixed,
+    Missing,
+    MixedOrMissing,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct PaceResult {
     previous_median_seconds_per_km: f64,
@@ -130,6 +192,7 @@ fn response(value: RunningInvestigation) -> InvestigationResponse {
             recent_runs,
             pace,
             heart_rate,
+            device_history,
         } => InvestigationResponse::Compared {
             version: VERSION,
             previous_runs: previous_runs.into_iter().map(Into::into).collect(),
@@ -140,6 +203,14 @@ fn response(value: RunningInvestigation) -> InvestigationResponse {
                 change_percent: pace.change_percent,
             },
             heart_rate: heart_rate.into(),
+            device_history: match device_history {
+                CoreDeviceHistory::Consistent => DeviceHistory::Consistent,
+                CoreDeviceHistory::Mixed => DeviceHistory::Mixed,
+                CoreDeviceHistory::Missing => DeviceHistory::Missing,
+                CoreDeviceHistory::MixedOrMissing => DeviceHistory::MixedOrMissing,
+            },
+            explanation: None,
+            explanation_error: None,
         },
         RunningInvestigation::InsufficientData {
             eligible_runs,
@@ -163,6 +234,7 @@ fn response(value: RunningInvestigation) -> InvestigationResponse {
 pub(super) async fn investigate_recent_running(
     app: tauri::AppHandle,
     request: InvestigationRequest,
+    progress: Channel<InvestigationProgress>,
 ) -> InvestigationResponse {
     if request.version != VERSION {
         return InvestigationResponse::Error {
@@ -170,8 +242,11 @@ pub(super) async fn investigate_recent_running(
             code: SaveError::UnsupportedRequest,
         };
     }
+    let (diagnostic_operation, started) = app
+        .state::<Diagnostics>()
+        .begin(Event::InvestigationStarted);
     let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let app = worker_app;
         let state = app.state::<LibraryState>();
         let Ok(mut session) = state.0.try_lock() else {
@@ -190,6 +265,13 @@ pub(super) async fn investigate_recent_running(
             }
         };
         if session.is_none() {
+            report_stage(
+                &app,
+                diagnostic_operation,
+                started,
+                &progress,
+                InvestigationStage::OpeningLibrary,
+            );
             match library_exists(&directory) {
                 Ok(false) => {
                     return response(RunningInvestigation::InsufficientData {
@@ -227,8 +309,164 @@ pub(super) async fn investigate_recent_running(
                 code: SaveError::SaveFailed,
             };
         };
+        report_stage(
+            &app,
+            diagnostic_operation,
+            started,
+            &progress,
+            InvestigationStage::AnalyzingActivities,
+        );
         match analyze_recent_running(library) {
-            Ok(result) => response(result),
+            Ok(result) => {
+                let mut answer = response(result);
+                #[cfg(target_os = "macos")]
+                let (generated, model_error) = if let InvestigationResponse::Compared {
+                    previous_runs,
+                    recent_runs,
+                    heart_rate,
+                    ..
+                } = &answer
+                {
+                    let mut ids: Vec<_> = previous_runs
+                        .iter()
+                        .chain(recent_runs.iter())
+                        .map(|run| run.source_id.clone())
+                        .collect();
+                    ids.truncate(6);
+                    let heart_rate_available =
+                        matches!(heart_rate, HeartRateResult::Available { .. });
+                    let aliases: Vec<_> = (0..ids.len())
+                        .map(|index| format!("E{}", index + 1))
+                        .collect();
+                    if let Ok(path) = app.path().app_local_data_dir().map(|path| {
+                        path.join("models")
+                            .join(crate::local_model::MODEL_FILE_NAME)
+                    }) {
+                        if path.exists() {
+                            report_stage(
+                                &app,
+                                diagnostic_operation,
+                                started,
+                                &progress,
+                                InvestigationStage::VerifyingModel,
+                            );
+                        }
+                        let operation = app
+                            .state::<crate::local_model::LocalModelState>()
+                            .operation
+                            .clone();
+                        let result = if let Ok(_guard) = operation.try_lock() {
+                            if !path.exists() {
+                                (None, None)
+                            } else if crate::local_model::verify_installed_model(&path) {
+                                let mut bounded = serde_json::to_value(&answer)
+                                    .unwrap_or(serde_json::Value::Null);
+                                if let Some(object) = bounded.as_object_mut() {
+                                    object.remove("explanation");
+                                    object.remove("explanation_error");
+                                }
+                                for (field, offset) in
+                                    [("previous_runs", 0usize), ("recent_runs", 3usize)]
+                                {
+                                    if let Some(runs) = bounded
+                                        .get_mut(field)
+                                        .and_then(serde_json::Value::as_array_mut)
+                                    {
+                                        for (index, run) in runs.iter_mut().enumerate() {
+                                            if let Some(source_id) = run.get_mut("source_id") {
+                                                *source_id = serde_json::Value::String(
+                                                    aliases[offset + index].clone(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                let mut report_model_stage = |stage| {
+                                    let stage = match stage {
+                                        crate::local_model::LocalModelStage::Loading => {
+                                            InvestigationStage::LoadingModel
+                                        }
+                                        crate::local_model::LocalModelStage::Generating => {
+                                            InvestigationStage::GeneratingExplanation
+                                        }
+                                    };
+                                    report_stage(
+                                        &app,
+                                        diagnostic_operation,
+                                        started,
+                                        &progress,
+                                        stage,
+                                    );
+                                };
+                                match crate::local_model::LlamaCppRuntime.explain(
+                                    &path,
+                                    &bounded,
+                                    &mut report_model_stage,
+                                ) {
+                                    Ok(output) => match crate::local_model::validate_explanation(
+                                        &output,
+                                        &aliases,
+                                        heart_rate_available,
+                                    ) {
+                                        Ok(mut valid) => {
+                                            valid.citations = valid
+                                                .citations
+                                                .iter()
+                                                .map(|alias| {
+                                                    ids[aliases
+                                                        .iter()
+                                                        .position(|candidate| candidate == alias)
+                                                        .expect("validated citation")]
+                                                    .clone()
+                                                })
+                                                .collect();
+                                            (Some(valid), None)
+                                        }
+                                        Err(error) => (None, Some(error)),
+                                    },
+                                    Err(error) => (None, Some(error)),
+                                }
+                            } else {
+                                (
+                                    None,
+                                    Some(crate::local_model::LocalModelError::VerificationFailed),
+                                )
+                            }
+                        } else {
+                            (
+                                None,
+                                Some(crate::local_model::LocalModelError::InstallInProgress),
+                            )
+                        };
+                        result
+                    } else {
+                        (
+                            None,
+                            Some(crate::local_model::LocalModelError::LocationUnavailable),
+                        )
+                    }
+                } else {
+                    (None, None)
+                };
+                if let InvestigationResponse::Compared {
+                    explanation,
+                    explanation_error,
+                    ..
+                } = &mut answer
+                {
+                    #[cfg(target_os = "macos")]
+                    {
+                        *explanation = generated;
+                        *explanation_error = model_error;
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        *explanation = None;
+                        *explanation_error = None;
+                    }
+                }
+                answer
+            }
             Err(error) => InvestigationResponse::Error {
                 version: VERSION,
                 code: error.into(),
@@ -239,7 +477,20 @@ pub(super) async fn investigate_recent_running(
     .unwrap_or(InvestigationResponse::Error {
         version: VERSION,
         code: SaveError::SaveFailed,
-    })
+    });
+    let outcome = match &result {
+        InvestigationResponse::Compared { .. } => InvestigationOutcome::Compared,
+        InvestigationResponse::InsufficientData { .. } => InvestigationOutcome::InsufficientData,
+        InvestigationResponse::Error { .. } => InvestigationOutcome::Error,
+    };
+    app.state::<Diagnostics>().record(
+        diagnostic_operation,
+        Event::InvestigationFinished {
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            outcome,
+        },
+    );
+    result
 }
 
 fn library_exists(directory: &Path) -> Result<bool, SaveError> {

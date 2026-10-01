@@ -289,7 +289,7 @@ export function batchFileErrorMessage(code: BatchFileErrorCode): string {
     case "fit_not_activity":
       return "This FIT file does not contain an activity with samples.";
     case "library_secret_unavailable":
-      return "Effortline could not access the library key in macOS Keychain. Allow access and retry.";
+      return "Effortline could not access the library key in macOS Keychain. If macOS asks, choose Always Allow, then select the files again with “Choose files to retry.”";
     case "library_cannot_unlock":
     case "library_encryption_unavailable":
       return "Effortline could not unlock the encrypted library.";

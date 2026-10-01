@@ -7,7 +7,7 @@ Effortline keeps an athlete's training history on their device. The desktop app 
 | Owner | May do | Must not do |
 | --- | --- | --- |
 | Portable Rust core | Parse source files, own canonical activity identity, store derived facts, run deterministic analysis, validate model tool requests, record evidence | Depend on Tauri, Keychain, AppKit, React, or OS-specific paths |
-| Tauri desktop shell | Select files, access the OS secret store, supervise the model process, expose typed commands, package the app | Recalculate domain measures or create a second import path |
+| Tauri desktop shell | Select files, access the OS secret store, manage the local model runtime, expose typed commands, package the app | Recalculate domain measures or create a second import path |
 | React interface | Show import state, chat, evidence, errors, and backup controls | Read raw activity files or the database directly; treat model text as trusted HTML |
 
 The target flow is `source file → validated importer → encrypted original + canonical record → versioned measures → deterministic comparison → evidence IDs → local model explanation → saved investigation`. A later provider adapter must enter at the validated importer. It cannot bypass identity, provenance, or error handling.
@@ -35,6 +35,7 @@ The first app runs only on Apple Silicon macOS. This keeps packaging and quality
 - [Testing strategy](testing.md)
 - [How to make a safe change](delivery.md)
 - [Project status and setup](../../README.md)
+- [Local model choice and safety boundary](local-model.md)
 
 ## Current desktop save boundary
 
@@ -62,7 +63,7 @@ The library remains unlocked until the app fully quits or a storage operation fa
 
 ### Local diagnostics
 
-The desktop shell owns device-local diagnostics. Startup, preview results, save stages, sample counts, elapsed durations, library reuse, and stable error codes use a typed allowlist. Logs never accept arbitrary strings from imported files or raw error messages. They exclude activity contents, filenames, paths, source hashes, notes, routes, and secrets. The portable core only emits progress through its callback.
+The desktop shell owns device-local diagnostics. Startup, preview results, save stages, sample counts, elapsed durations, library reuse, investigation stage markers, and stable error codes use a typed allowlist. Investigation markers cover library open/recovery, activity analysis, model verification, model load, and local inference. Logs never accept arbitrary strings from imported files or raw error messages. They exclude activity contents, filenames, paths, source hashes, notes, routes, prompts, model output, and secrets. The portable core only emits progress through its callback.
 
 Logs stay on the device. There is no telemetry SDK, upload, remote endpoint, or stable user identifier. Sharing a log is an explicit user action outside this save slice. A bounded background queue decouples log writes from the UI and storage. Rotation retains two files up to 1 MiB each; a separate lock serializes log writes across processes. On macOS, the log directory is mode 0700 and files are mode 0600. These are plaintext diagnostics, not encrypted activity records. Queue drops are counted in the next record. Disk errors stop the logger and emit a fixed stderr message without failing a save. Abrupt process exit can lose queued records; this is a diagnostic aid, not an audit journal.
 

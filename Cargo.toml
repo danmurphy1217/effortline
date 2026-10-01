@@ -15,3 +15,10 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Keep large model-artifact hashing responsive in local debug builds and tests.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3
