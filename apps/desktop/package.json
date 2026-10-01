@@ -13,7 +13,8 @@
     "format:check": "prettier --check src vite.config.ts eslint.config.mjs index.html package.json tsconfig.json tsconfig.node.json",
     "format": "prettier --write src vite.config.ts eslint.config.mjs index.html package.json tsconfig.json tsconfig.node.json",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build:signed": "bash scripts/build-signed-macos.sh"
   },
   "dependencies": {
     "react": "^19.1.0",

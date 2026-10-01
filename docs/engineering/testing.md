@@ -36,6 +36,14 @@ cargo test -p effortline-desktop --lib --locked library_save::tests::live_keycha
 
 This test creates a disposable Keychain entry, saves synthetic FIT bytes through the desktop save handler, reopens the encrypted library, and checks that a missing key is not replaced. It deletes its test entry when it ends. It does not access the app's real library key.
 
+Keychain-backed native checks must use a consistently signed app. `tauri dev` and the default debug bundle can be ad-hoc signed; macOS may deny their access to a Keychain item created by the signed app. Build a local Apple Development-signed app with:
+
+```sh
+APPLE_SIGNING_IDENTITY="Apple Development: …" pnpm --dir apps/desktop tauri:build:signed
+```
+
+Open `target/debug/bundle/macos/Effortline.app`. Do not use `tauri dev` to test the real library Keychain entry. The signing script clears macOS provenance attributes from the generated app bundle, signs it with the stable Effortline bundle identifier, and verifies the signature. This is a local development build, not a distribution or notarization workflow.
+
 The packaged debug app was checked with synthetic files: picker cancellation, preview, save, restart, duplicate save, and invalid-file rejection passed. The live Keychain test also passed. Native app checks leave synthetic activities in the local app library.
 
 Before a tester build, check the native picker, cancel, preview, save, duplicate save after restart, denied Keychain access, and error messages in the signed app. Unit tests simulate denied secret access; they do not prove the native permission prompt flow.
