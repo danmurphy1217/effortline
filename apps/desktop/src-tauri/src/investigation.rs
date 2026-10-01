@@ -389,6 +389,12 @@ pub(super) async fn investigate_recent_running(
                                         crate::local_model::LocalModelStage::Generating => {
                                             InvestigationStage::GeneratingExplanation
                                         }
+                                        crate::local_model::LocalModelStage::ParsingOutput => {
+                                            InvestigationStage::GeneratingExplanation
+                                        }
+                                        crate::local_model::LocalModelStage::OutputMalformedJson => {
+                                            InvestigationStage::GeneratingExplanation
+                                        }
                                     };
                                     report_stage(
                                         &app,
