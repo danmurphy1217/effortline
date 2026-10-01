@@ -82,7 +82,7 @@ void test("rendered completed states replace the save action and active progress
   const { renderToStaticMarkup } = await import("react-dom/server");
   const server = await createServer({
     configFile: false,
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, ws: false },
     appType: "custom",
   });
   try {
