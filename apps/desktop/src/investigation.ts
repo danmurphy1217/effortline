@@ -1,5 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { SaveErrorCode } from "./librarySave";
+import { saveErrorMessage, type SaveErrorCode } from "./librarySave.ts";
+
+export const MAX_CHAT_MESSAGE_CHARS = 800;
 
 export type RunningEvidence = {
   source_id: string;
@@ -29,6 +31,33 @@ export type InvestigationProgress = {
 
 export type InvestigationRequest = { version: 1 };
 
+export type TrainingChatReply = {
+  text: string;
+  kind: "general" | "evidence" | "clarification";
+  origin: "model" | "rust";
+  citations: string[];
+};
+
+export type TrainingChatError =
+  | {
+      code:
+        | "invalid_request"
+        | "busy"
+        | "model_not_installed"
+        | "model_unavailable"
+        | "unsafe_model_response";
+    }
+  | { code: "library"; detail: SaveErrorCode };
+
+export type TrainingChatResponse =
+  | {
+      version: 1;
+      status: "turn";
+      reply: TrainingChatReply;
+      evidence: RunningInvestigationResponse | null;
+    }
+  | { version: 1; status: "error"; code: TrainingChatError };
+
 const stageMessages: Record<InvestigationStage, string> = {
   opening_library: "Opening your encrypted activity library",
   analyzing_activities: "Comparing your saved running activities",
@@ -41,7 +70,7 @@ export function investigationProgressMessage(
   progress: InvestigationProgress | null,
   elapsedSeconds: number,
 ): string {
-  if (!progress) return "Starting your activity check…";
+  if (!progress) return "Preparing a private response…";
   const elapsed = Math.max(0, Math.floor(elapsedSeconds));
   const keychainHint =
     progress.stage === "opening_library" && elapsed >= 10
@@ -111,4 +140,43 @@ export async function askRunningChange(
   if (response.version !== 1)
     throw new Error("Unsupported investigation response version");
   return response;
+}
+
+export async function sendTrainingChatMessage(
+  message: string,
+  onProgress: (progress: InvestigationProgress) => void,
+): Promise<TrainingChatResponse> {
+  const channel = new Channel<InvestigationProgress>();
+  channel.onmessage = (progress) => {
+    if (progress.version === 1) onProgress(progress);
+  };
+  const response = await invoke<TrainingChatResponse>("training_chat", {
+    request: { version: 1, message },
+    progress: channel,
+  });
+  if (response.version !== 1)
+    throw new Error("Unsupported training chat response version");
+  return response;
+}
+
+export async function resetTrainingChat(): Promise<void> {
+  const reset = await invoke<boolean>("reset_training_chat");
+  if (!reset) throw new Error("Training chat could not be reset");
+}
+
+export function trainingChatErrorMessage(error: TrainingChatError): string {
+  switch (error.code) {
+    case "invalid_request":
+      return "Enter a question with no more than 800 characters.";
+    case "busy":
+      return "Effortline is still working on the previous message.";
+    case "model_not_installed":
+      return "Install the local model above to start a private training chat.";
+    case "model_unavailable":
+      return "The local model could not answer. Try again or reinstall it.";
+    case "unsafe_model_response":
+      return "Effortline could not verify that reply. Try asking in another way.";
+    case "library":
+      return saveErrorMessage(error.detail);
+  }
 }

@@ -28,10 +28,13 @@ pub fn run() {
         .manage(library_save::LibraryState::default())
         .manage(batch_import::BatchCancellation::default())
         .manage(local_model::LocalModelState::default())
+        .manage(investigation::TrainingChatState::default())
         .invoke_handler(tauri::generate_handler![
             fit_preview::preview_fit_activity,
             library_save::save_preview_to_library,
             library_save::check_preview_in_library,
+            investigation::training_chat,
+            investigation::reset_training_chat,
             investigation::investigate_recent_running,
             local_model::local_model_status,
             local_model::install_local_model,

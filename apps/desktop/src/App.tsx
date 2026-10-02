@@ -32,11 +32,15 @@ import {
   type BatchFileOutcome,
 } from "./librarySave";
 import {
-  askRunningChange,
   investigationProgressMessage,
+  MAX_CHAT_MESSAGE_CHARS,
+  resetTrainingChat,
+  sendTrainingChatMessage,
+  trainingChatErrorMessage,
   type InvestigationProgress,
   type RunningEvidence,
   type RunningInvestigationResponse,
+  type TrainingChatResponse,
 } from "./investigation";
 import "./App.css";
 
@@ -105,7 +109,24 @@ function activitySportLabel(sport: BatchActivitySummary["sport"]): string {
   }
 }
 
-const RUNNING_QUESTION = "How has my running changed recently?";
+type ChatTranscriptItem = {
+  id: number;
+  role: "user" | "assistant";
+  text: string;
+  kind?: "general" | "evidence" | "clarification" | "error";
+  origin?: "model" | "rust";
+  citations?: string[];
+  evidence?: RunningInvestigationResponse | null;
+};
+
+const MAX_VISIBLE_CHAT_ITEMS = 24;
+
+function appendChatItems(
+  current: ChatTranscriptItem[],
+  ...items: ChatTranscriptItem[]
+): ChatTranscriptItem[] {
+  return [...current, ...items].slice(-MAX_VISIBLE_CHAT_ITEMS);
+}
 
 function formatPace(secondsPerKm: number): string {
   const seconds = Math.round(secondsPerKm);
@@ -512,16 +533,13 @@ export function SaveAction({
 
 function App() {
   const [question, setQuestion] = useState("");
-  const [askedQuestion, setAskedQuestion] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatTranscriptItem[]>([]);
   const [investigationBusy, setInvestigationBusy] = useState(false);
-  const [investigationResponse, setInvestigationResponse] =
-    useState<RunningInvestigationResponse | null>(null);
   const [investigationProgress, setInvestigationProgress] =
     useState<InvestigationProgress | null>(null);
   const [investigationStartedAt, setInvestigationStartedAt] = useState<
     number | null
   >(null);
-  const [unsupportedQuestion, setUnsupportedQuestion] = useState(false);
   const [response, setResponse] = useState<PreviewResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [commandFailed, setCommandFailed] = useState(false);
@@ -618,11 +636,6 @@ function App() {
         status ? { ...status, installed: false } : status,
       );
       setModelProgress(null);
-      setInvestigationResponse((answer) =>
-        answer?.status === "compared"
-          ? { ...answer, explanation: null }
-          : answer,
-      );
     } catch (error) {
       setModelError(modelErrorMessage(error));
     } finally {
@@ -632,40 +645,78 @@ function App() {
 
   async function submitQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (investigationBusy) return;
-    if (
-      question.trim().toLocaleLowerCase() !==
-      RUNNING_QUESTION.toLocaleLowerCase()
-    ) {
-      setUnsupportedQuestion(true);
-      setAskedQuestion(null);
-      setInvestigationResponse(null);
-      return;
-    }
-    setUnsupportedQuestion(false);
-    setAskedQuestion(RUNNING_QUESTION);
+    const message = question.trim();
+    if (investigationBusy || message.length === 0) return;
+    const id = Date.now();
+    setChatMessages((current) =>
+      appendChatItems(current, { id, role: "user", text: message }),
+    );
+    setQuestion("");
     setInvestigationProgress(null);
     const startedAt = Date.now();
     setNow(startedAt);
     setInvestigationStartedAt(startedAt);
     setInvestigationBusy(true);
-    setInvestigationResponse(null);
     try {
-      setInvestigationResponse(
-        await askRunningChange((progress) => {
+      const result: TrainingChatResponse = await sendTrainingChatMessage(
+        message,
+        (progress) => {
           setInvestigationProgress(progress);
           setNow(Date.now());
+        },
+      );
+      if (result.status === "turn") {
+        setChatMessages((current) =>
+          appendChatItems(current, {
+            id: id + 1,
+            role: "assistant",
+            text: result.reply.text,
+            kind: result.reply.kind,
+            origin: result.reply.origin,
+            citations: result.reply.citations,
+            evidence: result.evidence,
+          }),
+        );
+      } else {
+        setChatMessages((current) =>
+          appendChatItems(current, {
+            id: id + 1,
+            role: "assistant",
+            text: trainingChatErrorMessage(result.code),
+            kind: "error",
+          }),
+        );
+      }
+    } catch {
+      setChatMessages((current) =>
+        appendChatItems(current, {
+          id: id + 1,
+          role: "assistant",
+          text: "Effortline could not complete this message. Try again.",
+          kind: "error",
         }),
       );
-    } catch {
-      setInvestigationResponse({
-        version: 1,
-        status: "error",
-        code: "save_failed",
-      });
     } finally {
       setInvestigationBusy(false);
       setInvestigationStartedAt(null);
+    }
+  }
+
+  async function startNewChat() {
+    if (investigationBusy) return;
+    try {
+      await resetTrainingChat();
+      setChatMessages([]);
+      setInvestigationProgress(null);
+    } catch {
+      setChatMessages((current) =>
+        appendChatItems(current, {
+          id: Date.now(),
+          role: "assistant",
+          text: "Effortline could not start a new chat. Try again.",
+          kind: "error",
+        }),
+      );
     }
   }
 
@@ -805,10 +856,9 @@ function App() {
       </p>
       <section className="local-model-card" aria-label="Local model">
         <div>
-          <strong>Optional local explanation</strong>
+          <strong>Local training assistant</strong>
           <p>
-            Install a model to add a possible interpretation to a measured
-            result. It runs on this Mac.
+            Install a model to chat about your training. It runs on this Mac.
           </p>
           <small>
             Download about 1.28 GB. Keep about 1.3 GB of free storage.
@@ -846,7 +896,9 @@ function App() {
           </div>
         )}
         {modelStatus?.installed && !modelBusy && (
-          <small>The model is installed. Explanations run on this Mac.</small>
+          <small>
+            The model is installed. Your training chat runs on this Mac.
+          </small>
         )}
         {modelError && <p role="alert">{modelError}</p>}
       </section>
@@ -854,13 +906,13 @@ function App() {
         className="question-composer"
         onSubmit={(event) => void submitQuestion(event)}
       >
-        <label htmlFor="running-question">Your question</label>
+        <label htmlFor="running-question">Your message</label>
         <input
           id="running-question"
           value={question}
           onChange={(event) => setQuestion(event.currentTarget.value)}
-          placeholder={RUNNING_QUESTION}
-          maxLength={160}
+          placeholder="Ask about your activities or training in general"
+          maxLength={MAX_CHAT_MESSAGE_CHARS}
           disabled={investigationBusy}
         />
         <button
@@ -869,33 +921,67 @@ function App() {
         >
           {investigationBusy ? "Working…" : "Ask"}
         </button>
-        {unsupportedQuestion && (
-          <p role="status">
-            I can answer this question right now: “{RUNNING_QUESTION}”
-          </p>
-        )}
       </form>
-      {askedQuestion && (
+      {chatMessages.length === 0 && (
+        <p className="chat-empty-note">
+          Ask a question about your training. Effortline can check saved running
+          activities or discuss general training ideas.
+        </p>
+      )}
+      {chatMessages.length > 0 && (
         <section
           className="result conversation"
           aria-live="polite"
           aria-busy={investigationBusy}
         >
-          <p className="user-question">{askedQuestion}</p>
-          <div className="assistant-answer">
-            {investigationBusy ? (
-              <p role="status">
-                {investigationProgressMessage(
-                  investigationProgress,
-                  investigationStartedAt === null
-                    ? 0
-                    : (now - investigationStartedAt) / 1000,
-                )}
-              </p>
-            ) : investigationResponse ? (
-              <RunningAnswer result={investigationResponse} />
-            ) : null}
+          <div className="chat-heading">
+            <h2>Training chat</h2>
+            <button
+              type="button"
+              onClick={() => void startNewChat()}
+              disabled={investigationBusy}
+            >
+              New chat
+            </button>
           </div>
+          {chatMessages.map((item) =>
+            item.role === "user" ? (
+              <p className="user-question" key={item.id}>
+                {item.text}
+              </p>
+            ) : (
+              <div className="assistant-answer" key={item.id}>
+                {item.kind === "evidence" && (
+                  <small className="chat-reply-origin">
+                    {item.origin === "model"
+                      ? "Possible interpretation · local model"
+                      : "Measured summary · Effortline"}
+                  </small>
+                )}
+                <p>{item.text}</p>
+                {item.kind === "evidence" && item.evidence && (
+                  <RunningAnswer result={item.evidence} />
+                )}
+                {item.kind === "evidence" &&
+                  item.citations &&
+                  item.citations.length > 0 && (
+                    <small className="chat-citations">
+                      Evidence checked: {item.citations.length} activities
+                    </small>
+                  )}
+              </div>
+            ),
+          )}
+          {investigationBusy && (
+            <p role="status">
+              {investigationProgressMessage(
+                investigationProgress,
+                investigationStartedAt === null
+                  ? 0
+                  : (now - investigationStartedAt) / 1000,
+              )}
+            </p>
+          )}
         </section>
       )}
 
