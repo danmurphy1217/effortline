@@ -137,6 +137,29 @@ p {
   margin-bottom: 2rem;
 }
 
+.chat-empty-note {
+  margin: 0 0 1.5rem;
+  color: #aebfb4;
+}
+
+.chat-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid #325043;
+}
+
+.chat-heading h2 {
+  margin: 0;
+}
+
+.chat-heading button {
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.85rem;
+}
+
 .user-question {
   justify-self: end;
   max-width: 85%;
@@ -150,6 +173,22 @@ p {
 
 .assistant-answer {
   min-width: 0;
+}
+
+.chat-citations {
+  display: block;
+  margin-top: 0.6rem;
+  color: #a6b9ad;
+}
+
+.chat-reply-origin {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: #a6b9ad;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .assistant-answer > :first-child,
