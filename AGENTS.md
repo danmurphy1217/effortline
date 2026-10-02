@@ -17,6 +17,7 @@ This is the canonical entry point for coding agents. Read it before changing cod
 - `apps/desktop/src-tauri/` owns the desktop command boundary and OS adapters: file selection, secret storage, model process, windows, and packaging. Commands validate input and call the core. They do not duplicate analysis rules.
 - `apps/desktop/src/` owns presentation and user interaction. It uses typed, versioned commands. It does not read the database or activity files directly.
 - Give each durable fact one owner. Use explicit types and stable error codes across boundaries. Add a new layer only for a real ownership, security, or reuse need.
+- Model application-owned data with explicit Rust structs and enums. Use typed Serde DTOs for every command, provider, and local-model request or response; do not pass `serde_json::Value`, string-keyed maps, or untyped objects across those boundaries. Parse external JSON into a typed DTO at ingress, reject unknown fields where the contract is closed, and map provider data into core-owned types. Use distinct newtypes or enums when two string or numeric values have different meanings.
 - Keep M0 setup honest. A placeholder screen must not claim that import, encryption, or analysis works before it does.
 
 ## Required workflow

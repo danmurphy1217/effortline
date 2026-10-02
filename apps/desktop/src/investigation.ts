@@ -27,6 +27,8 @@ export type InvestigationProgress = {
   elapsed_ms: number;
 };
 
+export type InvestigationRequest = { version: 1 };
+
 const stageMessages: Record<InvestigationStage, string> = {
   opening_library: "Opening your encrypted activity library",
   analyzing_activities: "Comparing your saved running activities",
@@ -97,13 +99,14 @@ export type RunningInvestigationResponse =
 export async function askRunningChange(
   onProgress: (progress: InvestigationProgress) => void,
 ): Promise<RunningInvestigationResponse> {
+  const request: InvestigationRequest = { version: 1 };
   const channel = new Channel<InvestigationProgress>();
   channel.onmessage = (progress) => {
     if (progress.version === 1) onProgress(progress);
   };
   const response = await invoke<RunningInvestigationResponse>(
     "investigate_recent_running",
-    { request: { version: 1 }, progress: channel },
+    { request, progress: channel },
   );
   if (response.version !== 1)
     throw new Error("Unsupported investigation response version");
