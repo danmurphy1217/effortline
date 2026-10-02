@@ -1,9 +1,9 @@
 use crate::diagnostics::{Diagnostics, Event};
 use crate::library_save::{LibraryState, SaveError};
 use crate::library_secret::KeychainSecret;
-use crate::local_model::GeneratedExplanation;
 #[cfg(target_os = "macos")]
 use crate::local_model::LocalModelRuntime;
+use crate::local_model::{EvidenceAlias, GeneratedExplanation, ModelRunEvidence};
 use effortline_core::investigation::{
     investigate_recent_running as analyze_recent_running, ActivityEvidence,
     DeviceHistory as CoreDeviceHistory, HeartRateComparison,
@@ -69,14 +69,14 @@ pub(super) struct InvestigationRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct RunningEvidence {
-    source_id: String,
-    started_at_unix_ms: i64,
-    duration_seconds: u64,
-    distance_m: f64,
-    pace_seconds_per_km: f64,
-    sample_count: usize,
-    heart_rate_sample_count: usize,
-    median_heart_rate_bpm: Option<f64>,
+    pub(super) source_id: String,
+    pub(super) started_at_unix_ms: i64,
+    pub(super) duration_seconds: u64,
+    pub(super) distance_m: f64,
+    pub(super) pace_seconds_per_km: f64,
+    pub(super) sample_count: usize,
+    pub(super) heart_rate_sample_count: usize,
+    pub(super) median_heart_rate_bpm: Option<f64>,
 }
 
 impl From<ActivityEvidence> for RunningEvidence {
@@ -162,6 +162,29 @@ pub(super) enum InvestigationResponse {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum ModelInput {
+    Compared(Box<ModelComparedInput>),
+    // Sparse results stay deterministic in the live flow; this variant supports the synthetic
+    // model evaluation contract and is not sent to inference for real insufficient-data results.
+    #[allow(dead_code)]
+    InsufficientData {
+        eligible_runs: usize,
+        required_runs: usize,
+        reason: InsufficientDataReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(super) struct ModelComparedInput {
+    pub(super) previous_runs: [ModelRunEvidence; effortline_core::investigation::RUNS_PER_PERIOD],
+    pub(super) recent_runs: [ModelRunEvidence; effortline_core::investigation::RUNS_PER_PERIOD],
+    pub(super) pace: PaceResult,
+    pub(super) heart_rate: HeartRateResult,
+    pub(super) device_history: DeviceHistory,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum InsufficientDataReason {
@@ -180,9 +203,9 @@ pub(super) enum DeviceHistory {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct PaceResult {
-    previous_median_seconds_per_km: f64,
-    recent_median_seconds_per_km: f64,
-    change_percent: f64,
+    pub(super) previous_median_seconds_per_km: f64,
+    pub(super) recent_median_seconds_per_km: f64,
+    pub(super) change_percent: f64,
 }
 
 fn response(value: RunningInvestigation) -> InvestigationResponse {
@@ -228,6 +251,32 @@ fn response(value: RunningInvestigation) -> InvestigationResponse {
             },
         },
     }
+}
+
+fn alias_runs<const N: usize>(
+    runs: &[RunningEvidence],
+    alias_offset: usize,
+) -> Option<[ModelRunEvidence; N]> {
+    if runs.len() != N {
+        return None;
+    }
+    let evidence = runs
+        .iter()
+        .enumerate()
+        .map(|(index, run)| {
+            Some(ModelRunEvidence {
+                source_id: EvidenceAlias::from_index(alias_offset + index)?,
+                started_at_unix_ms: run.started_at_unix_ms,
+                duration_seconds: run.duration_seconds,
+                distance_m: run.distance_m,
+                pace_seconds_per_km: run.pace_seconds_per_km,
+                sample_count: run.sample_count,
+                heart_rate_sample_count: run.heart_rate_sample_count,
+                median_heart_rate_bpm: run.median_heart_rate_bpm,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    evidence.try_into().ok()
 }
 
 #[tauri::command]
@@ -323,22 +372,42 @@ pub(super) async fn investigate_recent_running(
                 let (generated, model_error) = if let InvestigationResponse::Compared {
                     previous_runs,
                     recent_runs,
+                    pace,
                     heart_rate,
+                    device_history,
                     ..
                 } = &answer
                 {
-                    let mut ids: Vec<_> = previous_runs
+                    let ids: Vec<_> = previous_runs
                         .iter()
                         .chain(recent_runs.iter())
                         .map(|run| run.source_id.clone())
                         .collect();
-                    ids.truncate(6);
                     let heart_rate_available =
                         matches!(heart_rate, HeartRateResult::Available { .. });
-                    let aliases: Vec<_> = (0..ids.len())
-                        .map(|index| format!("E{}", index + 1))
-                        .collect();
-                    if let Ok(path) = app.path().app_local_data_dir().map(|path| {
+                    if let (Some(previous_model_runs), Some(recent_model_runs)) = (
+                        alias_runs::<{ effortline_core::investigation::RUNS_PER_PERIOD }>(
+                            previous_runs,
+                            0,
+                        ),
+                        alias_runs::<{ effortline_core::investigation::RUNS_PER_PERIOD }>(
+                            recent_runs,
+                            effortline_core::investigation::RUNS_PER_PERIOD,
+                        ),
+                    ) {
+                        let aliases: Vec<_> = previous_model_runs
+                            .iter()
+                            .chain(&recent_model_runs)
+                            .map(|run| run.source_id)
+                            .collect();
+                        let bounded = ModelInput::Compared(Box::new(ModelComparedInput {
+                            previous_runs: previous_model_runs,
+                            recent_runs: recent_model_runs,
+                            pace: pace.clone(),
+                            heart_rate: heart_rate.clone(),
+                            device_history: *device_history,
+                        }));
+                        if let Ok(path) = app.path().app_local_data_dir().map(|path| {
                         path.join("models")
                             .join(crate::local_model::MODEL_FILE_NAME)
                     }) {
@@ -359,28 +428,6 @@ pub(super) async fn investigate_recent_running(
                             if !path.exists() {
                                 (None, None)
                             } else if crate::local_model::verify_installed_model(&path) {
-                                let mut bounded = serde_json::to_value(&answer)
-                                    .unwrap_or(serde_json::Value::Null);
-                                if let Some(object) = bounded.as_object_mut() {
-                                    object.remove("explanation");
-                                    object.remove("explanation_error");
-                                }
-                                for (field, offset) in
-                                    [("previous_runs", 0usize), ("recent_runs", 3usize)]
-                                {
-                                    if let Some(runs) = bounded
-                                        .get_mut(field)
-                                        .and_then(serde_json::Value::as_array_mut)
-                                    {
-                                        for (index, run) in runs.iter_mut().enumerate() {
-                                            if let Some(source_id) = run.get_mut("source_id") {
-                                                *source_id = serde_json::Value::String(
-                                                    aliases[offset + index].clone(),
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
                                 let mut report_model_stage = |stage| {
                                     let stage = match stage {
                                         crate::local_model::LocalModelStage::Loading => {
@@ -414,19 +461,23 @@ pub(super) async fn investigate_recent_running(
                                         &aliases,
                                         heart_rate_available,
                                     ) {
-                                        Ok(mut valid) => {
-                                            valid.citations = valid
+                                        Ok(valid) => {
+                                            let citations = valid
                                                 .citations
                                                 .iter()
-                                                .map(|alias| {
-                                                    ids[aliases
-                                                        .iter()
-                                                        .position(|candidate| candidate == alias)
-                                                        .expect("validated citation")]
-                                                    .clone()
-                                                })
-                                                .collect();
-                                            (Some(valid), None)
+                                                .map(|alias| ids.get(alias.index()).cloned())
+                                                .collect::<Option<Vec<_>>>();
+                                            if let Some(citations) = citations {
+                                                (Some(GeneratedExplanation {
+                                                    text: valid.text,
+                                                    citations,
+                                                }), None)
+                                            } else {
+                                                (
+                                                    None,
+                                                    Some(crate::local_model::LocalModelError::InferenceFailed),
+                                                )
+                                            }
                                         }
                                         Err(error) => (None, Some(error)),
                                     },
@@ -449,6 +500,12 @@ pub(super) async fn investigate_recent_running(
                         (
                             None,
                             Some(crate::local_model::LocalModelError::LocationUnavailable),
+                        )
+                    }
+                    } else {
+                        (
+                            None,
+                            Some(crate::local_model::LocalModelError::InferenceFailed),
                         )
                     }
                 } else {
@@ -514,6 +571,45 @@ fn library_exists(directory: &Path) -> Result<bool, SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_model_input_uses_aliases_instead_of_source_hashes() {
+        let source_id = "private-source-hash";
+        let run = RunningEvidence {
+            source_id: source_id.into(),
+            started_at_unix_ms: 1_700_000_000_000,
+            duration_seconds: 300,
+            distance_m: 1_000.0,
+            pace_seconds_per_km: 300.0,
+            sample_count: 20,
+            heart_rate_sample_count: 20,
+            median_heart_rate_bpm: Some(140.0),
+        };
+        let runs: [RunningEvidence; effortline_core::investigation::RUNS_PER_PERIOD] =
+            std::array::from_fn(|_| run.clone());
+        let previous_runs = alias_runs(&runs, 0).unwrap();
+        let recent_runs =
+            alias_runs(&runs, effortline_core::investigation::RUNS_PER_PERIOD).unwrap();
+        let input = ModelInput::Compared(Box::new(ModelComparedInput {
+            previous_runs,
+            recent_runs,
+            pace: PaceResult {
+                previous_median_seconds_per_km: 300.0,
+                recent_median_seconds_per_km: 280.0,
+                change_percent: -6.6,
+            },
+            heart_rate: HeartRateResult::Available {
+                previous_median_bpm: 140.0,
+                recent_median_bpm: 138.0,
+            },
+            device_history: DeviceHistory::Consistent,
+        }));
+        let serialized = serde_json::to_string(&input).unwrap();
+
+        assert_eq!(run.source_id, source_id);
+        assert!(serialized.contains("E1"));
+        assert!(!serialized.contains(source_id));
+    }
 
     #[test]
     fn insufficient_data_response_is_versioned_and_typed() {

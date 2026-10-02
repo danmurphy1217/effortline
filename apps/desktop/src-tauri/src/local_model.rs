@@ -1,7 +1,8 @@
 //! User-managed local model installation and replaceable inference adapter.
 //! No prompt, output, or activity values are written to diagnostics.
 
-use serde::Serialize;
+use crate::investigation::ModelInput;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -282,9 +283,69 @@ pub trait LocalModelRuntime: Send + Sync {
     fn explain(
         &self,
         model_path: &Path,
-        bounded_result: &serde_json::Value,
+        input: &ModelInput,
         on_stage: &mut dyn FnMut(LocalModelStage),
-    ) -> Result<GeneratedExplanation, LocalModelError>;
+    ) -> Result<ModelExplanation, LocalModelError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EvidenceAlias {
+    #[serde(rename = "E1")]
+    E1,
+    #[serde(rename = "E2")]
+    E2,
+    #[serde(rename = "E3")]
+    E3,
+    #[serde(rename = "E4")]
+    E4,
+    #[serde(rename = "E5")]
+    E5,
+    #[serde(rename = "E6")]
+    E6,
+}
+
+impl EvidenceAlias {
+    pub(super) fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::E1),
+            1 => Some(Self::E2),
+            2 => Some(Self::E3),
+            3 => Some(Self::E4),
+            4 => Some(Self::E5),
+            5 => Some(Self::E6),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn index(self) -> usize {
+        match self {
+            Self::E1 => 0,
+            Self::E2 => 1,
+            Self::E3 => 2,
+            Self::E4 => 3,
+            Self::E5 => 4,
+            Self::E6 => 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(super) struct ModelRunEvidence {
+    pub(super) source_id: EvidenceAlias,
+    pub(super) started_at_unix_ms: i64,
+    pub(super) duration_seconds: u64,
+    pub(super) distance_m: f64,
+    pub(super) pace_seconds_per_km: f64,
+    pub(super) sample_count: usize,
+    pub(super) heart_rate_sample_count: usize,
+    pub(super) median_heart_rate_bpm: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelExplanation {
+    pub text: String,
+    pub citations: Vec<EvidenceAlias>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -296,14 +357,14 @@ pub enum LocalModelStage {
     OutputMalformedJson,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratedExplanation {
     pub text: String,
     pub citations: Vec<String>,
 }
 
-fn parse_generated_explanation(output: &[u8]) -> Result<GeneratedExplanation, LocalModelError> {
+fn parse_generated_explanation(output: &[u8]) -> Result<ModelExplanation, LocalModelError> {
     let output = std::str::from_utf8(output).map_err(|_| LocalModelError::InferenceFailed)?;
     let bytes = output.as_bytes();
 
@@ -467,8 +528,8 @@ const ALLOWED_WORDS: &[&str] = &[
 ];
 
 fn explanation_rejection(
-    output: &GeneratedExplanation,
-    allowed_source_ids: &[String],
+    output: &ModelExplanation,
+    allowed_source_ids: &[EvidenceAlias],
     heart_rate_available: bool,
 ) -> Option<ExplanationRejection> {
     let contains_unsupported_word = output
@@ -526,10 +587,10 @@ fn explanation_rejection(
 }
 
 pub fn validate_explanation(
-    output: &GeneratedExplanation,
-    allowed_source_ids: &[String],
+    output: &ModelExplanation,
+    allowed_source_ids: &[EvidenceAlias],
     heart_rate_available: bool,
-) -> Result<GeneratedExplanation, LocalModelError> {
+) -> Result<ModelExplanation, LocalModelError> {
     if explanation_rejection(output, allowed_source_ids, heart_rate_available).is_some() {
         return Err(LocalModelError::InferenceFailed);
     }
@@ -583,9 +644,9 @@ mod llama_runtime {
         fn explain(
             &self,
             model_path: &Path,
-            bounded_result: &serde_json::Value,
+            bounded_result: &ModelInput,
             on_stage: &mut dyn FnMut(LocalModelStage),
-        ) -> Result<GeneratedExplanation, LocalModelError> {
+        ) -> Result<ModelExplanation, LocalModelError> {
             on_stage(LocalModelStage::Loading);
             let mut backend = LlamaBackend::init().map_err(|_| LocalModelError::ModelLoadFailed)?;
             backend.void_logs();
@@ -601,7 +662,7 @@ mod llama_runtime {
             let template = model
                 .chat_template(None)
                 .map_err(|_| LocalModelError::ModelLoadFailed)?;
-            let insufficient = bounded_result["status"] == "insufficient_data";
+            let insufficient = matches!(bounded_result, ModelInput::InsufficientData { .. });
             let system = if insufficient {
                 "Set text exactly to: 'There are too few saved runs to compare.' Do not mention pace, heart rate, causes, numbers, or advice. Return only JSON: {\"text\":\"There are too few saved runs to compare.\",\"citations\":[]}."
             } else {
@@ -678,12 +739,15 @@ impl LocalModelState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::investigation::{
+        DeviceHistory, HeartRateResult, InsufficientDataReason, ModelComparedInput, PaceResult,
+    };
 
     #[test]
     fn generated_explanation_parser_accepts_json_surrounded_by_model_text() {
-        let expected = GeneratedExplanation {
+        let expected = ModelExplanation {
             text: "The recent group has a wider pace spread.".into(),
-            citations: vec!["E4".into()],
+            citations: vec![EvidenceAlias::E4],
         };
         let wrapped = br#"Here is the result: {"text":"The recent group has a wider pace spread.","citations":["E4"]} I hope this helps."#;
 
@@ -700,30 +764,36 @@ mod tests {
             parse_generated_explanation(br#"{"answer":"not the contract"}"#),
             Err(LocalModelError::InferenceFailed)
         );
+        assert_eq!(
+            parse_generated_explanation(
+                br#"{"text":"The recent pace appears faster than the previous pace, but these runs do not show why.","citations":["E7"]}"#,
+            ),
+            Err(LocalModelError::InferenceFailed)
+        );
     }
 
     #[test]
     fn accepts_only_rust_citations_and_non_numeric_non_advice_text() {
-        let allowed = vec!["abc123".to_owned()];
-        let valid = GeneratedExplanation {
+        let allowed = vec![EvidenceAlias::E1];
+        let valid = ModelExplanation {
             text: "The recent group has a wider spread in pace. The records do not show why."
                 .into(),
-            citations: vec!["abc123".into()],
+            citations: vec![EvidenceAlias::E1],
         };
         assert_eq!(
             validate_explanation(&valid, &allowed, true),
             Ok(valid.clone())
         );
 
-        let fabricated = GeneratedExplanation {
-            citations: vec!["not-returned-by-rust".into()],
+        let fabricated = ModelExplanation {
+            citations: vec![EvidenceAlias::E2],
             ..valid.clone()
         };
         assert_eq!(
             validate_explanation(&fabricated, &allowed, true),
             Err(LocalModelError::InferenceFailed)
         );
-        let numeric = GeneratedExplanation {
+        let numeric = ModelExplanation {
             text: "The pace changed by 12 percent.".into(),
             ..valid.clone()
         };
@@ -731,7 +801,7 @@ mod tests {
             validate_explanation(&numeric, &allowed, true),
             Err(LocalModelError::InferenceFailed)
         );
-        let advice = GeneratedExplanation {
+        let advice = ModelExplanation {
             text: "You should increase training.".into(),
             ..valid.clone()
         };
@@ -739,7 +809,7 @@ mod tests {
             validate_explanation(&advice, &allowed, true),
             Err(LocalModelError::InferenceFailed)
         );
-        let unsupported = GeneratedExplanation {
+        let unsupported = ModelExplanation {
             text: "The recent runs may reflect hotter weather.".into(),
             ..valid.clone()
         };
@@ -747,7 +817,7 @@ mod tests {
             validate_explanation(&unsupported, &allowed, true),
             Err(LocalModelError::InferenceFailed)
         );
-        let missing_hr_claim = GeneratedExplanation {
+        let missing_hr_claim = ModelExplanation {
             text: "Heart rate differs between the groups.".into(),
             ..valid.clone()
         };
@@ -756,7 +826,7 @@ mod tests {
             Err(LocalModelError::InferenceFailed)
         );
 
-        let sparse = GeneratedExplanation {
+        let sparse = ModelExplanation {
             text: "There are too few saved runs to compare.".into(),
             citations: vec![],
         };
@@ -792,23 +862,49 @@ mod tests {
             verification_started.elapsed().as_secs_f64() * 1000.0
         );
         let runtime = LlamaCppRuntime;
-        let compared = serde_json::json!({
-            "status": "compared",
-            "pace": {"previous_median_seconds_per_km": 300.0, "recent_median_seconds_per_km": 280.0, "change_percent": -6.6},
-            "heart_rate": {"status": "available", "previous_median_bpm": 140.0, "recent_median_bpm": 138.0},
-            "device_history": "consistent",
-            "previous_runs": [{"source_id":"E1"},{"source_id":"E2"},{"source_id":"E3"}],
-            "recent_runs": [{"source_id":"E4"},{"source_id":"E5"},{"source_id":"E6"}]
-        });
-        let missing_hr = serde_json::json!({
-            "status": "compared",
-            "pace": {"previous_median_seconds_per_km": 300.0, "recent_median_seconds_per_km": 280.0, "change_percent": -6.6},
-            "heart_rate": {"status": "insufficient_coverage", "previous_qualified_runs": 1, "recent_qualified_runs": 0},
-            "device_history": "mixed_or_missing",
-            "previous_runs": [{"source_id":"E1"},{"source_id":"E2"},{"source_id":"E3"}],
-            "recent_runs": [{"source_id":"E4"},{"source_id":"E5"},{"source_id":"E6"}]
-        });
-        let sparse = serde_json::json!({"status":"insufficient_data", "eligible_runs":2, "required_runs":6, "reason":"too_few_runs"});
+        let evidence_run = |index| ModelRunEvidence {
+            source_id: EvidenceAlias::from_index(index).expect("fixture alias is in range"),
+            started_at_unix_ms: 1_700_000_000_000,
+            duration_seconds: 300,
+            distance_m: 1_000.0,
+            pace_seconds_per_km: 300.0,
+            sample_count: 20,
+            heart_rate_sample_count: 20,
+            median_heart_rate_bpm: Some(140.0),
+        };
+        let pace = PaceResult {
+            previous_median_seconds_per_km: 300.0,
+            recent_median_seconds_per_km: 280.0,
+            change_percent: -6.6,
+        };
+        let compared = ModelInput::Compared(Box::new(ModelComparedInput {
+            pace: pace.clone(),
+            heart_rate: HeartRateResult::Available {
+                previous_median_bpm: 140.0,
+                recent_median_bpm: 138.0,
+            },
+            device_history: DeviceHistory::Consistent,
+            previous_runs: std::array::from_fn(evidence_run),
+            recent_runs: std::array::from_fn(|index| evidence_run(index + 3)),
+        }));
+        let missing_hr = ModelInput::Compared(Box::new(ModelComparedInput {
+            pace,
+            heart_rate: HeartRateResult::InsufficientCoverage {
+                previous_qualified_runs: 1,
+                recent_qualified_runs: 0,
+                required_runs_per_period: 3,
+                minimum_samples_per_run: 10,
+                minimum_coverage_percent: 50,
+            },
+            device_history: DeviceHistory::MixedOrMissing,
+            previous_runs: std::array::from_fn(evidence_run),
+            recent_runs: std::array::from_fn(|index| evidence_run(index + 3)),
+        }));
+        let sparse = ModelInput::InsufficientData {
+            eligible_runs: 2,
+            required_runs: 6,
+            reason: InsufficientDataReason::TooFewRuns,
+        };
         let cases = [(&compared, true), (&missing_hr, false), (&sparse, false)];
         let mut grounded = 0usize;
         let mut cited = 0usize;
@@ -840,10 +936,16 @@ mod tests {
                 last_stage
             );
             let output = output.expect("synthetic inference should run");
-            let allowed: Vec<_> = if evidence["status"] == "insufficient_data" {
-                Vec::new()
-            } else {
-                (1..=6).map(|index| format!("E{index}")).collect()
+            let allowed: Vec<_> = match evidence {
+                ModelInput::Compared(_) => vec![
+                    EvidenceAlias::E1,
+                    EvidenceAlias::E2,
+                    EvidenceAlias::E3,
+                    EvidenceAlias::E4,
+                    EvidenceAlias::E5,
+                    EvidenceAlias::E6,
+                ],
+                ModelInput::InsufficientData { .. } => Vec::new(),
             };
             let checked = validate_explanation(&output, &allowed, has_heart_rate);
             if checked.is_ok() {
@@ -874,7 +976,7 @@ mod tests {
             if output.citations.iter().all(|id| allowed.contains(id)) {
                 cited += 1;
             }
-            if evidence["status"] == "insufficient_data"
+            if matches!(evidence, ModelInput::InsufficientData { .. })
                 && output.citations.is_empty()
                 && output
                     .text
