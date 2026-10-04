@@ -6,7 +6,7 @@ use crate::local_model::LocalModelRuntime;
 use crate::local_model::{
     validate_chat_decision, ChatDecisionRejection, EvidenceAlias, GeneratedExplanation,
     ModelChatDecision, ModelChatMessage, ModelChatPhase, ModelChatRequest, ModelChatRole,
-    ModelRunEvidence, ReplyScope, TrainingToolCall,
+    ModelRunEvidence, ReplyScope,
 };
 use effortline_core::investigation::{
     investigate_recent_running as analyze_recent_running, ActivityEvidence,
@@ -459,30 +459,12 @@ fn make_chat_evidence(value: RunningInvestigation) -> Result<ChatEvidence, Train
     })
 }
 
-fn allowed_aliases(evidence: Option<&ChatEvidence>) -> Vec<EvidenceAlias> {
-    evidence
-        .map(|evidence| match &evidence.model_input {
-            ModelInput::Compared(_) => (0..6).filter_map(EvidenceAlias::from_index).collect(),
-            ModelInput::InsufficientData { .. } => Vec::new(),
-        })
-        .unwrap_or_default()
-}
-
 pub(super) fn validated_chat_decision(
-    mut decision: ModelChatDecision,
+    decision: ModelChatDecision,
     phase: ModelChatPhase,
     evidence: Option<&ChatEvidence>,
 ) -> Result<ModelChatDecision, TrainingChatError> {
-    if let ModelChatDecision::Reply {
-        scope: ReplyScope::General,
-        citations,
-        ..
-    } = &mut decision
-    {
-        // General answers cannot cite personal evidence, so discard model-supplied aliases.
-        citations.clear();
-    }
-    validate_chat_decision(&decision, phase, &allowed_aliases(evidence))
+    validate_chat_decision(&decision, phase, evidence.is_some())
         .map_err(|_: ChatDecisionRejection| TrainingChatError::UnsafeModelResponse)?;
     if let (
         ModelChatDecision::Reply {
@@ -493,12 +475,24 @@ pub(super) fn validated_chat_decision(
         Some(evidence),
     ) = (&decision, evidence)
     {
-        validate_evidence_reply(text, evidence)?;
+        validate_evidence_reply(text, evidence)
+            .map_err(|_| TrainingChatError::UnsafeModelResponse)?;
     }
     Ok(decision)
 }
 
-fn validate_evidence_reply(text: &str, evidence: &ChatEvidence) -> Result<(), TrainingChatError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EvidenceReplyRejection {
+    UnsupportedCause,
+    MissingHypothesisMarker,
+    PersonalOrMeasuredClaim,
+    InsufficientData,
+}
+
+pub(super) fn validate_evidence_reply(
+    text: &str,
+    evidence: &ChatEvidence,
+) -> Result<(), EvidenceReplyRejection> {
     let lower = text.to_ascii_lowercase();
     let unsupported_causal_claim = [
         "because",
@@ -512,7 +506,7 @@ fn validate_evidence_reply(text: &str, evidence: &ChatEvidence) -> Result<(), Tr
     .iter()
     .any(|phrase| lower.contains(phrase));
     if unsupported_causal_claim {
-        return Err(TrainingChatError::UnsafeModelResponse);
+        return Err(EvidenceReplyRejection::UnsupportedCause);
     }
 
     let words: Vec<&str> = lower
@@ -520,45 +514,25 @@ fn validate_evidence_reply(text: &str, evidence: &ChatEvidence) -> Result<(), Tr
         .filter(|word| !word.is_empty())
         .collect();
     let personal_or_measured_terms = [
-        "you",
-        "your",
-        "athlete",
-        "activity",
-        "activities",
-        "training",
-        "history",
-        "result",
-        "results",
-        "comparison",
-        "change",
-        "progress",
-        "run",
-        "runs",
-        "running",
-        "pace",
-        "heart",
-        "device",
-        "sensor",
-        "faster",
-        "slower",
-        "quicker",
-        "similar",
-        "improved",
-        "declined",
+        "you", "your", "athlete", "faster", "slower", "quicker", "similar", "improved", "declined",
     ];
-    let marked_as_hypothesis = ["possible", "possibly", "may", "might", "could"]
+    let marked_as_hypothesis = ["possible", "possibly", "may", "might", "could", "can"]
         .iter()
         .any(|word| words.contains(word));
-    if !marked_as_hypothesis
-        || words
-            .iter()
-            .any(|word| personal_or_measured_terms.contains(word))
-        || matches!(
-            evidence.response,
-            InvestigationResponse::InsufficientData { .. }
-        )
+    if !marked_as_hypothesis {
+        return Err(EvidenceReplyRejection::MissingHypothesisMarker);
+    }
+    if words
+        .iter()
+        .any(|word| personal_or_measured_terms.contains(word))
     {
-        return Err(TrainingChatError::UnsafeModelResponse);
+        return Err(EvidenceReplyRejection::PersonalOrMeasuredClaim);
+    }
+    if matches!(
+        evidence.response,
+        InvestigationResponse::InsufficientData { .. }
+    ) {
+        return Err(EvidenceReplyRejection::InsufficientData);
     }
     Ok(())
 }
@@ -568,20 +542,7 @@ fn reply_from_decision(
     evidence: Option<&ChatEvidence>,
 ) -> Result<(TrainingChatReply, Option<InvestigationResponse>), TrainingChatError> {
     match decision {
-        ModelChatDecision::Reply {
-            text,
-            scope,
-            citations,
-        } => {
-            let citation_ids = citations
-                .iter()
-                .map(|citation| {
-                    evidence
-                        .and_then(|evidence| evidence.source_ids.get(citation.index()))
-                        .cloned()
-                        .ok_or(TrainingChatError::UnsafeModelResponse)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+        ModelChatDecision::Reply { text, scope, .. } => {
             let (kind, display_evidence) = match scope {
                 ReplyScope::General => (TrainingChatReplyKind::General, None),
                 ReplyScope::Evidence => (
@@ -594,7 +555,13 @@ fn reply_from_decision(
                     text,
                     kind,
                     origin: TrainingChatReplyOrigin::Model,
-                    citations: citation_ids,
+                    citations: if scope == ReplyScope::Evidence {
+                        evidence
+                            .map(|evidence| evidence.source_ids.clone())
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    },
                 },
                 display_evidence,
             ))
@@ -608,7 +575,7 @@ fn reply_from_decision(
             },
             None,
         )),
-        ModelChatDecision::CallTool { .. } => Err(TrainingChatError::UnsafeModelResponse),
+        ModelChatDecision::CallTool => Err(TrainingChatError::UnsafeModelResponse),
     }
 }
 
@@ -796,9 +763,7 @@ pub(super) async fn training_chat(
             }
         };
         let (decision, evidence) = match decision {
-            ModelChatDecision::CallTool {
-                tool: TrainingToolCall::CompareRecentRunning(_),
-            } => {
+            ModelChatDecision::CallTool => {
                 let library_state = app.state::<LibraryState>();
                 let Ok(mut library_session) = library_state.0.try_lock() else {
                     return TrainingChatResponse::Error {
@@ -1241,6 +1206,7 @@ fn library_exists(directory: &Path) -> Result<bool, SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_model::ModelCitation;
 
     #[test]
     fn typed_model_input_uses_aliases_instead_of_source_hashes() {
@@ -1438,7 +1404,7 @@ mod tests {
         let decision = |text: &str| ModelChatDecision::Reply {
             text: text.into(),
             scope: ReplyScope::Evidence,
-            citations: vec![EvidenceAlias::E1],
+            citations: vec![ModelCitation("E99".into())],
         };
         assert_eq!(
             validated_chat_decision(
@@ -1458,29 +1424,36 @@ mod tests {
         );
         assert_eq!(
             validated_chat_decision(
-                decision("A possible factor to consider is recovery."),
+                decision("A possible factor to consider is recovery, which may affect pace."),
                 ModelChatPhase::ChooseAction,
                 Some(&evidence),
             )
             .unwrap(),
-            decision("A possible factor to consider is recovery.")
+            decision("A possible factor to consider is recovery, which may affect pace.")
         );
+        let accepted = validated_chat_decision(
+            decision("A possible factor to consider is recovery, which may affect pace."),
+            ModelChatPhase::ChooseAction,
+            Some(&evidence),
+        )
+        .expect("the general hypothesis is allowed");
+        let (reply, _) = reply_from_decision(accepted, Some(&evidence))
+            .expect("Rust attaches citations to the evidence it supplied");
+        assert_eq!(reply.citations, evidence.source_ids);
     }
 
     #[test]
-    fn general_reply_does_not_retain_model_supplied_evidence_aliases() {
+    fn general_reply_has_no_model_supplied_citations() {
         let decision = ModelChatDecision::Reply {
             text: "A steady routine can support endurance.".into(),
             scope: ReplyScope::General,
-            citations: vec![EvidenceAlias::E1],
+            citations: Vec::new(),
         };
+        let expected = decision.clone();
 
         let validated = validated_chat_decision(decision, ModelChatPhase::ChooseAction, None)
             .expect("general replies do not cite athlete evidence");
-        assert!(matches!(
-            validated,
-            ModelChatDecision::Reply { citations, .. } if citations.is_empty()
-        ));
+        assert_eq!(validated, expected);
     }
 
     fn run_evidence(index: usize) -> ModelRunEvidence {
