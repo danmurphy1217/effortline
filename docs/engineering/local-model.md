@@ -1,6 +1,6 @@
-# Local model for the first investigation
+# Local model for training chat
 
-The first chat question remains a deterministic Rust comparison. If the athlete installs the optional model, the Tauri shell may ask it to write a short interpretation of that result. Rust still calculates pace, selects the six activities, labels data limits, and validates the model's evidence references. The model has no database, filesystem, or network tool.
+The chat accepts free-form messages and keeps a bounded conversation in memory until the app exits or the user starts a new chat. The local model may answer, ask a clarifying question, or select a registered typed Rust tool. The first tool compares recent running. There is no supported-question list, exact-phrase routing, model-defined tool, or general execution loop. Rust calculates training measures and chooses evidence. The model has no database, filesystem, or network tool.
 
 ## Model and runtime
 
@@ -10,7 +10,7 @@ The first chat question remains a deterministic Rust comparison. If the athlete 
 - **Build tools:** Native builds need CMake and the Xcode command line tools to compile llama.cpp.
 - **Device scope:** Apple Silicon macOS. Runtime and model weights are used only on this device. Inference does not start a local server or make a network request.
 
-Qwen publishes the base model under Apache-2.0. The chosen quantization is a third-party conversion of that model using llama.cpp; the app pins the exact converted file and verifies its byte count and SHA-256 both after download and before inference. The source repo lists Q4_K_M at about 1.28 GB and recommends it as its default trade-off. It is much smaller than the original 4.07 GB BF16 weights, with some quality loss. This 1.7B model may still follow instructions poorly; the checked vocabulary and citation gate can reject its answer, while the Rust result remains visible.
+Qwen publishes the base model under Apache-2.0. The chosen quantization is a third-party conversion of that model using llama.cpp; the app pins the exact converted file and verifies its byte count and SHA-256 after download and on first use in each app process. It reuses that result only while the artifact's filesystem identity is unchanged. Install and removal clear the cache. The source repo lists Q4_K_M at about 1.28 GB and recommends it as its default trade-off. It is much smaller than the original 4.07 GB BF16 weights, with some quality loss. This 1.7B model may still follow instructions poorly; Rust rejects unverified replies and keeps the measured result visible.
 
 The app tells users to allow about 1.3 GB of free storage. The artifact is downloaded only after the user selects **Install model**. The UI streams byte progress, supports cancel and retry, and removes only the model artifact. A cancelled or incomplete `.part` file is not used. No prompt, generated text, or activity detail enters local diagnostics.
 
@@ -22,11 +22,11 @@ The investigation streams fixed stage names and elapsed time to the UI and recor
 
 ## Evidence boundary and safe display
 
-The Tauri command runs the existing Rust investigation first. A typed `ModelInput` enum gives the model only its bounded result and six evidence rows. The six rows use fixed-size arrays; source hashes are replaced with the closed `EvidenceAlias` enum (`E1`–`E6`) before inference. The model response is a typed DTO with the same alias enum, so invalid aliases fail during deserialization. Rust also validates evidence membership, vocabulary, and claims before it maps citations back to source IDs for the UI. The UI displays the measured comparison separately from a clearly labelled possible interpretation.
+The Tauri command accepts typed messages and uses a closed `ModelChatDecision` enum. Tool arguments are typed, empty, and reject unknown fields. The command runs the registered Rust tool only after the model selects it. A typed `ModelInput` enum gives the model only the bounded result and six evidence rows. The six rows use fixed-size arrays; source hashes are replaced with the closed `EvidenceAlias` enum (`E1`–`E6`) before inference. The model response is a typed DTO with the same alias enum, so invalid aliases fail during deserialization. An evidence reply may only add a tentative, general factor to consider. Rust rejects numbers, personal details, measured terms, direct causal wording, and unmarked possibilities in this model text. The UI labels it **Possible interpretation · local model** and shows the measured result separately. Invalid model text falls back to a **Measured summary · Effortline** built from the Rust result.
 
-The model cannot supply numeric claims. Rust rejects digits, unknown citations, advice or causal phrases, and words outside a narrow running-comparison vocabulary. It also rejects heart-rate language if the deterministic result does not have enough heart-rate coverage. Invalid output produces a clear message; the measured result and its citations remain available. Rust also reports mixed, missing, or consistent FIT device identifiers. FIT sensor identity is unavailable and the UI states that limit directly. The model is not asked to infer a device or sensor effect.
+The model cannot supply numeric claims. Rust rejects digits, unknown citations, unsafe advice, and a small set of unsupported claims. General answers also pass a personal-history check. Rust also reports mixed, missing, or consistent FIT device identifiers. FIT sensor identity is unavailable and the UI states that limit directly. The model does not report device or heart-rate facts; those stay in the measured result.
 
-Insufficient-history results stay deterministic and do not invoke the model in the live flow. Sparse-data handling is included in the opt-in synthetic evaluation.
+Insufficient-history results stay deterministic and do not invoke the model in the live flow. Invalid evidence replies use a safe Rust summary. General training guidance remains separate from claims about the athlete's saved history. Model output is not treated as a source of measured facts.
 
 ## Checks
 
@@ -37,6 +37,16 @@ cargo test -p effortline-desktop --locked evaluate_local_model_with_synthetic_in
 ```
 
 The evaluation prints verification, model-load, inference timings, and aggregate counts for grounding, citation validity, sparse-data response, and the unsafe-advice guard. It fails if any synthetic case produces an invalid or unsafe explanation. It does not print or save prompts, outputs, or activity details.
+
+The flexible chat evaluation uses only synthetic questions and evidence:
+
+```sh
+cargo test -p effortline-desktop --locked evaluate_local_model_with_synthetic_chat_cases -- --ignored --nocapture
+```
+
+On the current M4 Pro run, this chat evaluation did not pass. The model's follow-up reply had invalid citations. A later general reply returned malformed output, so the runtime rejected it. The test stopped before it could report the remaining chat cases. Do not treat flexible model chat as validated on this run. The app must keep tool evidence in Rust and show a clear error when the model returns an invalid answer.
+
+Normal Rust tests cover closed typed actions, safe fallback text, staged conversation history, pace-direction checks, unsupported causal language, citation validation, and sparse results without downloading or running model weights.
 
 ## Primary sources
 
