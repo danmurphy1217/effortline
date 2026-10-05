@@ -6,7 +6,7 @@ The chat accepts free-form messages and keeps a bounded conversation in memory u
 
 - **Model:** [Qwen3-1.7B](https://huggingface.co/Qwen/Qwen3-1.7B), Apache-2.0, using the third-party [bartowski Q4_K_M GGUF](https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF).
 - **Artifact:** `Qwen_Qwen3-1.7B-Q4_K_M.gguf`, pinned to repository revision `dcb19155b962dbb6389f4691a982043a8e651022`, 1,282,439,584 bytes (about 1.28 GB / 1.19 GiB), SHA-256 `72c5c3cb38fa32d5256e2fe30d03e7a64c6c79e668ad84057e3bd66e250b24fb`.
-- **Runtime:** [`llama-cpp-2` 0.1.158](https://docs.rs/llama-cpp-2/0.1.158/llama_cpp_2/), with the `metal` feature. It embeds llama.cpp and uses the model's chat template. llama.cpp is [MIT licensed](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE) and supports Apple Silicon Metal. The Rust bindings are MIT or Apache-2.0.
+- **Runtime:** [`llama-cpp-4` 0.7.0](https://docs.rs/llama-cpp-4/0.7.0/llama_cpp_4/), with the `metal` feature. It embeds llama.cpp, uses the model's chat template, and exposes llama.cpp's common sampler. llama.cpp is [MIT licensed](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE) and supports Apple Silicon Metal. The Rust bindings are MIT or Apache-2.0.
 - **Build tools:** Native builds need CMake and the Xcode command line tools to compile llama.cpp.
 - **Device scope:** Apple Silicon macOS. Runtime and model weights are used only on this device. Inference does not start a local server or make a network request.
 
@@ -15,6 +15,8 @@ Qwen publishes the base model under Apache-2.0. The chosen quantization is a thi
 The app tells users to allow about 1.3 GB of free storage. The artifact is downloaded only after the user selects **Install model**. The UI streams byte progress, supports cancel and retry, and removes only the model artifact. A cancelled or incomplete `.part` file is not used. No prompt, generated text, or activity detail enters local diagnostics.
 
 All model instructions live in separate Markdown files under `apps/desktop/src-tauri/prompts/`. Rust includes those files at build time. Keep prompt wording out of Rust string literals so it can be reviewed and changed in one place. Follow the [prompt-writing guide](prompt-writing.md) when you change one.
+
+Every model response uses a JSON Schema derived from its Rust response DTO with `schemars`. The schema is passed with the typed chat request; llama.cpp's common sampler constrains generated tokens and accounts for the chat template's generation prefix. Rust still deserializes the response and runs its citation, phase, and safety checks. Prompts describe response behavior but do not repeat JSON shapes. Normal tests compile every response schema to a llama.cpp grammar. The opt-in Apple Silicon test exercises constrained generation with synthetic questions and evidence.
 
 The macOS debug app built for this change is about 57.9 MiB because the Metal runtime is linked into the app. The model card does not specify a minimum RAM requirement. On this M4 Pro with 48 GiB, the synthetic evaluation measured model-file verification at 45.2 seconds in an unoptimized debug build. Optimizing only the `sha2` dependency in dev and test profiles reduced that check to about 2.3 seconds. The first Metal kernel compilation took 15.6 seconds; a warm initialization took about 0.046 seconds. Peak resident memory was about 1.9 GB.
 
@@ -46,7 +48,9 @@ The flexible chat evaluation uses only synthetic questions and evidence:
 cargo test -p effortline-desktop --locked evaluate_local_model_with_synthetic_chat_cases -- --ignored --nocapture
 ```
 
-The latest M4 Pro run did not pass. The model selected the Rust tool for both paraphrases and asked for clarification on an ambiguous question. It returned an acceptable general factor for the tool evidence, but one general/out-of-scope reply was rejected. Its follow-up made an unsupported numeric claim, so Rust rejected it. The safe Rust fallback passed its check. Do not treat flexible model chat as validated. Invalid output must use the safe Rust result or clear error; do not weaken the response checks to make this evaluation pass.
+The latest M4 Pro run with Rust-derived output schemas produced typed results for every attempted chat response. The broader behavior evaluation did not pass: the model selected the Rust tool for 0 of 2 paraphrases, and its follow-up made an unsupported numeric claim. Rust rejected that follow-up; the measured-evidence fallback passed. The ambiguity check and general hypothesis passed, but the general and out-of-scope reply checks did not. This confirms response-shape enforcement, not flexible chat quality. Do not treat flexible model chat as validated.
+
+The synthetic investigation evaluation also did not pass all checks. Typed explanation output parsed for all three cases. Rust accepted 2 of 3 explanations; the third cited an alias that was not present in the supplied evidence. The sparse-data text check passed 0 of 1 cases, and the unsafe-advice guard passed 3 of 3. On this M4 Pro debug run, artifact verification took 2.39 s. The three model calls took 1.19 s, 0.90 s, and 0.50 s, including model load, generation, and output parsing. This is one local run, not a performance guarantee.
 
 Normal Rust tests cover closed typed actions, safe fallback text, staged conversation history, pace-direction checks, unsupported causal language, citation validation, and sparse results without downloading or running model weights.
 
