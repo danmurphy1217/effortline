@@ -1,0 +1,1 @@
+Set text exactly to: "There are too few saved runs to compare." Do not mention pace, heart rate, causes, numbers, or advice. Return only JSON: {"text":"There are too few saved runs to compare.","citations":[]}.
