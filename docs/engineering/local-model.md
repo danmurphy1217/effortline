@@ -14,7 +14,7 @@ Qwen publishes the base model under Apache-2.0. The chosen quantization is a thi
 
 The app tells users to allow about 1.3 GB of free storage. The artifact is downloaded only after the user selects **Install model**. The UI streams byte progress, supports cancel and retry, and removes only the model artifact. A cancelled or incomplete `.part` file is not used. No prompt, generated text, or activity detail enters local diagnostics.
 
-All model instructions live in separate Markdown files under `apps/desktop/src-tauri/prompts/`. Rust includes those files at build time. Keep prompt wording out of Rust string literals so it can be reviewed and changed in one place.
+All model instructions live in separate Markdown files under `apps/desktop/src-tauri/prompts/`. Rust includes those files at build time. Keep prompt wording out of Rust string literals so it can be reviewed and changed in one place. Follow the [prompt-writing guide](prompt-writing.md) when you change one.
 
 The macOS debug app built for this change is about 57.9 MiB because the Metal runtime is linked into the app. The model card does not specify a minimum RAM requirement. On this M4 Pro with 48 GiB, the synthetic evaluation measured model-file verification at 45.2 seconds in an unoptimized debug build. Optimizing only the `sha2` dependency in dev and test profiles reduced that check to about 2.3 seconds. The first Metal kernel compilation took 15.6 seconds; a warm initialization took about 0.046 seconds. Peak resident memory was about 1.9 GB.
 
