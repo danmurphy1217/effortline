@@ -2,6 +2,7 @@
 //! No prompt, output, or activity values are written to diagnostics.
 
 use crate::investigation::ModelInput;
+use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -395,46 +396,41 @@ pub enum ModelChatDecision {
     CallTool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum RawModelChatAction {
-    Reply,
-    AskClarifyingQuestion,
-    CallTool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum RegisteredTrainingTool {
     CompareRecentRunning,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct EmptyToolArguments {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawTrainingToolCall {
     name: RegisteredTrainingTool,
     arguments: EmptyToolArguments,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawModelChatDecision {
-    action: RawModelChatAction,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    scope: Option<ReplyScope>,
-    #[serde(default)]
-    citations: Vec<ModelCitation>,
-    #[serde(default)]
-    tool: Option<RawTrainingToolCall>,
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum RawModelChatDecision {
+    Reply {
+        text: String,
+        scope: ReplyScope,
+        #[serde(default)]
+        citations: Vec<ModelCitation>,
+    },
+    AskClarifyingQuestion {
+        text: String,
+    },
+    CallTool {
+        tool: RawTrainingToolCall,
+    },
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelChatAnswer {
     pub text: String,
@@ -442,11 +438,11 @@ pub struct ModelChatAnswer {
     pub citations: Vec<ModelCitation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ModelCitation(pub String);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplyScope {
     General,
@@ -455,49 +451,22 @@ pub enum ReplyScope {
 
 fn normalize_chat_decision(
     decision: RawModelChatDecision,
-    request: &ModelChatRequest,
 ) -> Result<ModelChatDecision, LocalModelError> {
-    let invalid = || LocalModelError::InferenceFailed;
-    match decision.action {
-        RawModelChatAction::Reply => {
-            if decision.text.is_none() || decision.tool.is_some() {
-                return Err(invalid());
-            }
-            Ok(ModelChatDecision::Reply {
-                text: decision.text.ok_or_else(invalid)?,
-                scope: decision.scope.unwrap_or_else(|| {
-                    if request.previous_evidence.is_some() {
-                        ReplyScope::Evidence
-                    } else {
-                        ReplyScope::General
-                    }
-                }),
-                citations: decision.citations,
-            })
+    Ok(match decision {
+        RawModelChatDecision::Reply {
+            text,
+            scope,
+            citations,
+        } => ModelChatDecision::Reply {
+            text,
+            scope,
+            citations,
+        },
+        RawModelChatDecision::AskClarifyingQuestion { text } => {
+            ModelChatDecision::AskClarifyingQuestion { text }
         }
-        RawModelChatAction::AskClarifyingQuestion => {
-            if decision.scope.is_some() || !decision.citations.is_empty() || decision.tool.is_some()
-            {
-                return Err(invalid());
-            }
-            Ok(ModelChatDecision::AskClarifyingQuestion {
-                text: decision.text.ok_or_else(invalid)?,
-            })
-        }
-        RawModelChatAction::CallTool => {
-            if decision.text.is_some() || decision.scope.is_some() || !decision.citations.is_empty()
-            {
-                return Err(invalid());
-            }
-            if decision
-                .tool
-                .is_some_and(|tool| tool.name != RegisteredTrainingTool::CompareRecentRunning)
-            {
-                return Err(invalid());
-            }
-            Ok(ModelChatDecision::CallTool)
-        }
-    }
+        RawModelChatDecision::CallTool { tool: _ } => ModelChatDecision::CallTool,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -597,7 +566,7 @@ fn validate_chat_text(text: &str, scope: ReplyScope) -> Result<(), ChatDecisionR
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum EvidenceAlias {
     #[serde(rename = "E1")]
     E1,
@@ -650,7 +619,7 @@ pub(super) struct ModelRunEvidence {
     pub(super) median_heart_rate_bpm: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelExplanation {
     pub text: String,
@@ -671,10 +640,6 @@ pub enum LocalModelStage {
 pub struct GeneratedExplanation {
     pub text: String,
     pub citations: Vec<String>,
-}
-
-fn parse_generated_explanation(output: &[u8]) -> Result<ModelExplanation, LocalModelError> {
-    parse_generated_json(output)
 }
 
 fn parse_generated_json<T: DeserializeOwned>(output: &[u8]) -> Result<T, LocalModelError> {
@@ -978,26 +943,41 @@ fn digest_matches(count: u64, digest: &str, expected_bytes: u64, expected_sha256
 #[cfg(target_os = "macos")]
 mod llama_runtime {
     use super::*;
-    use llama_cpp_2::context::params::LlamaContextParams;
-    use llama_cpp_2::llama_backend::LlamaBackend;
-    use llama_cpp_2::llama_batch::LlamaBatch;
-    use llama_cpp_2::model::params::LlamaModelParams;
-    use llama_cpp_2::model::{LlamaChatMessage, LlamaModel};
-    use llama_cpp_2::sampling::LlamaSampler;
+    use llama_cpp_4::chat::{ChatApplyParams, ChatTemplates};
+    use llama_cpp_4::common_sampler::{CommonSampler, CommonSamplerParams, GrammarSource};
+    use llama_cpp_4::context::params::LlamaContextParams;
+    use llama_cpp_4::llama_backend::LlamaBackend;
+    use llama_cpp_4::llama_batch::LlamaBatch;
+    use llama_cpp_4::model::params::LlamaModelParams;
+    use llama_cpp_4::model::{AddBos, LlamaModel, Special};
     use std::num::NonZeroU32;
     use std::pin::pin;
 
     pub struct LlamaCppRuntime;
 
+    #[derive(Serialize)]
+    struct ChatTemplateMessage {
+        role: ChatTemplateRole,
+        content: String,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "lowercase")]
+    enum ChatTemplateRole {
+        System,
+        User,
+        Assistant,
+    }
+
     fn chat_messages(
         system: &str,
         request: &ModelChatRequest,
-    ) -> Result<Vec<LlamaChatMessage>, LocalModelError> {
+    ) -> Result<Vec<ChatTemplateMessage>, LocalModelError> {
         let mut messages = Vec::with_capacity(request.messages.len() + 1);
-        messages.push(
-            LlamaChatMessage::new("system".into(), system.into())
-                .map_err(|_| LocalModelError::InferenceFailed)?,
-        );
+        messages.push(ChatTemplateMessage {
+            role: ChatTemplateRole::System,
+            content: system.into(),
+        });
 
         let evidence = request
             .tool_result
@@ -1022,13 +1002,13 @@ mod llama_runtime {
                 }
             }
             let role = match message.role {
-                ModelChatRole::User => "user",
-                ModelChatRole::Assistant => "assistant",
+                ModelChatRole::User => ChatTemplateRole::User,
+                ModelChatRole::Assistant => ChatTemplateRole::Assistant,
             };
-            messages.push(
-                LlamaChatMessage::new(role.into(), text)
-                    .map_err(|_| LocalModelError::InferenceFailed)?,
-            );
+            messages.push(ChatTemplateMessage {
+                role,
+                content: text,
+            });
         }
 
         if last_user_index.is_none() {
@@ -1037,9 +1017,9 @@ mod llama_runtime {
         Ok(messages)
     }
 
-    fn generate_chat_json<T: DeserializeOwned>(
+    fn generate_typed_json<T: DeserializeOwned + JsonSchema>(
         model_path: &Path,
-        messages: &[LlamaChatMessage],
+        messages: &[ChatTemplateMessage],
         on_stage: &mut dyn FnMut(LocalModelStage),
     ) -> Result<T, LocalModelError> {
         on_stage(LocalModelStage::Loading);
@@ -1048,19 +1028,30 @@ mod llama_runtime {
         let params = pin!(LlamaModelParams::default().with_n_gpu_layers(99));
         let model = LlamaModel::load_from_file(&backend, model_path, &params)
             .map_err(|_| LocalModelError::ModelLoadFailed)?;
+        let vocab = model.get_vocab();
         let mut context = model
             .new_context(
                 &backend,
                 LlamaContextParams::default().with_n_ctx(NonZeroU32::new(4096)),
             )
             .map_err(|_| LocalModelError::ModelLoadFailed)?;
-        let template = model
-            .chat_template(None)
+        let messages_json =
+            serde_json::to_string(messages).map_err(|_| LocalModelError::InferenceFailed)?;
+        let schema = schemars::schema_for!(T);
+        let schema_json =
+            serde_json::to_string(&schema).map_err(|_| LocalModelError::InferenceFailed)?;
+        let templates = ChatTemplates::from_model(&model, None)
             .map_err(|_| LocalModelError::ModelLoadFailed)?;
-        let prompt = model
-            .apply_chat_template(&template, messages, true)
+        let chat_params = templates
+            .apply(
+                &ChatApplyParams::new(messages_json)
+                    .with_json_schema(schema_json)
+                    .with_enable_thinking(false),
+            )
             .map_err(|_| LocalModelError::InferenceFailed)?;
-        let tokens = model.vocab().tokenize(prompt.as_bytes(), true, true);
+        let tokens = model
+            .str_to_token(&chat_params.prompt, AddBos::Always)
+            .map_err(|_| LocalModelError::InferenceFailed)?;
         if tokens.is_empty() || tokens.len() > 3500 {
             return Err(LocalModelError::InferenceFailed);
         }
@@ -1074,15 +1065,32 @@ mod llama_runtime {
         context
             .decode(&mut batch)
             .map_err(|_| LocalModelError::InferenceFailed)?;
-        let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
+        let mut sampler_params = CommonSamplerParams::new();
+        let mut sampler_scalars = sampler_params.scalars();
+        sampler_scalars.temp = 0.0;
+        sampler_params.set_scalars(&sampler_scalars);
+        sampler_params
+            .set_grammar(&chat_params.grammar, GrammarSource::OutputFormat, false)
+            .map_err(|_| LocalModelError::InferenceFailed)?;
+        sampler_params
+            .set_generation_prompt(chat_params.generation_prompt())
+            .map_err(|_| LocalModelError::InferenceFailed)?;
+        let mut sampler = CommonSampler::new(&model, &mut sampler_params)
+            .map_err(|_| LocalModelError::InferenceFailed)?;
         let mut output = Vec::new();
         for position in tokens.len()..tokens.len() + 512 {
-            let token = sampler.sample(&context, batch.n_tokens() - 1);
-            sampler.accept(token);
-            if model.vocab().is_eog(token) {
+            let token = sampler
+                .sample(&mut context, batch.n_tokens() - 1, false)
+                .map_err(|_| LocalModelError::InferenceFailed)?;
+            sampler.accept(token, true);
+            if vocab.is_eog(token) {
                 break;
             }
-            output.extend(model.vocab().token_to_piece(token, true, None));
+            output.extend(
+                model
+                    .token_to_bytes(token, Special::Tokenize)
+                    .map_err(|_| LocalModelError::InferenceFailed)?,
+            );
             batch.clear();
             batch
                 .add(token, position as i32, &[0], true)
@@ -1105,21 +1113,6 @@ mod llama_runtime {
             bounded_result: &ModelInput,
             on_stage: &mut dyn FnMut(LocalModelStage),
         ) -> Result<ModelExplanation, LocalModelError> {
-            on_stage(LocalModelStage::Loading);
-            let mut backend = LlamaBackend::init().map_err(|_| LocalModelError::ModelLoadFailed)?;
-            backend.void_logs();
-            let params = pin!(LlamaModelParams::default().with_n_gpu_layers(99));
-            let model = LlamaModel::load_from_file(&backend, model_path, &params)
-                .map_err(|_| LocalModelError::ModelLoadFailed)?;
-            let mut context = model
-                .new_context(
-                    &backend,
-                    LlamaContextParams::default().with_n_ctx(NonZeroU32::new(4096)),
-                )
-                .map_err(|_| LocalModelError::ModelLoadFailed)?;
-            let template = model
-                .chat_template(None)
-                .map_err(|_| LocalModelError::ModelLoadFailed)?;
             let insufficient = matches!(bounded_result, ModelInput::InsufficientData { .. });
             let system = if insufficient {
                 RUNNING_COMPARISON_SPARSE_PROMPT
@@ -1133,50 +1126,16 @@ mod llama_runtime {
                     .map_err(|_| LocalModelError::InferenceFailed)?
             );
             let messages = [
-                LlamaChatMessage::new("system".into(), system.into())
-                    .map_err(|_| LocalModelError::InferenceFailed)?,
-                LlamaChatMessage::new("user".into(), user)
-                    .map_err(|_| LocalModelError::InferenceFailed)?,
+                ChatTemplateMessage {
+                    role: ChatTemplateRole::System,
+                    content: system.into(),
+                },
+                ChatTemplateMessage {
+                    role: ChatTemplateRole::User,
+                    content: user,
+                },
             ];
-            let prompt = model
-                .apply_chat_template(&template, &messages, true)
-                .map_err(|_| LocalModelError::InferenceFailed)?;
-            let tokens = model.vocab().tokenize(prompt.as_bytes(), true, true);
-            if tokens.is_empty() || tokens.len() > 3500 {
-                return Err(LocalModelError::InferenceFailed);
-            }
-            let mut batch = LlamaBatch::new(4096, 1);
-            for (index, token) in tokens.iter().copied().enumerate() {
-                batch
-                    .add(token, index as i32, &[0], index + 1 == tokens.len())
-                    .map_err(|_| LocalModelError::InferenceFailed)?;
-            }
-            on_stage(LocalModelStage::Generating);
-            context
-                .decode(&mut batch)
-                .map_err(|_| LocalModelError::InferenceFailed)?;
-            let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
-            let mut output = Vec::new();
-            for position in tokens.len()..tokens.len() + 256 {
-                let token = sampler.sample(&context, batch.n_tokens() - 1);
-                sampler.accept(token);
-                if model.vocab().is_eog(token) {
-                    break;
-                }
-                output.extend(model.vocab().token_to_piece(token, true, None));
-                batch.clear();
-                batch
-                    .add(token, position as i32, &[0], true)
-                    .map_err(|_| LocalModelError::InferenceFailed)?;
-                context
-                    .decode(&mut batch)
-                    .map_err(|_| LocalModelError::InferenceFailed)?;
-            }
-            on_stage(LocalModelStage::ParsingOutput);
-            parse_generated_explanation(&output).map_err(|_| {
-                on_stage(LocalModelStage::OutputMalformedJson);
-                LocalModelError::InferenceFailed
-            })
+            generate_typed_json::<ModelExplanation>(model_path, &messages, on_stage)
         }
 
         fn chat_turn(
@@ -1200,20 +1159,45 @@ mod llama_runtime {
             let messages = chat_messages(system, request)?;
             match request.phase {
                 ModelChatPhase::ChooseAction => {
-                    let decision = generate_chat_json::<RawModelChatDecision>(
+                    let decision = generate_typed_json::<RawModelChatDecision>(
                         model_path, &messages, on_stage,
                     )?;
-                    normalize_chat_decision(decision, request)
+                    normalize_chat_decision(decision)
                 }
                 ModelChatPhase::RespondFromTool => {
                     let answer =
-                        generate_chat_json::<ModelChatAnswer>(model_path, &messages, on_stage)?;
+                        generate_typed_json::<ModelChatAnswer>(model_path, &messages, on_stage)?;
                     Ok(ModelChatDecision::Reply {
                         text: answer.text,
                         scope: ReplyScope::Evidence,
                         citations: answer.citations,
                     })
                 }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn rust_response_types_compile_to_closed_output_grammars() {
+            let schemas = [
+                schemars::schema_for!(RawModelChatDecision),
+                schemars::schema_for!(ModelChatAnswer),
+                schemars::schema_for!(ModelExplanation),
+            ];
+            let decision_schema = serde_json::to_string(&schemas[0]).unwrap();
+            for action in ["reply", "ask_clarifying_question", "call_tool"] {
+                assert!(decision_schema.contains(action));
+            }
+            assert!(decision_schema.contains("compare_recent_running"));
+            for schema in &schemas {
+                let serialized = serde_json::to_string(schema).unwrap();
+                assert!(serialized.contains("additionalProperties"));
+                assert!(serialized.contains("false"));
+                assert!(llama_cpp_4::chat::json_schema_to_grammar(&serialized, false).is_ok());
             }
         }
     }
@@ -1325,28 +1309,27 @@ mod tests {
     fn chat_contract_accepts_only_the_registered_tool_and_closed_response_shape() {
         assert_eq!(
             parse_generated_json::<RawModelChatDecision>(br#"{"action":"call_tool"}"#),
-            Ok(RawModelChatDecision {
-                action: RawModelChatAction::CallTool,
-                text: None,
-                scope: None,
-                citations: Vec::new(),
-                tool: None,
-            })
+            Err(LocalModelError::InferenceFailed)
         );
         assert_eq!(
             parse_generated_json::<RawModelChatDecision>(
                 br#"{"action":"call_tool","tool":{"name":"compare_recent_running","arguments":{}}}"#
             ),
-            Ok(RawModelChatDecision {
-                action: RawModelChatAction::CallTool,
-                text: None,
-                scope: None,
-                citations: Vec::new(),
-                tool: Some(RawTrainingToolCall {
+            Ok(RawModelChatDecision::CallTool {
+                tool: RawTrainingToolCall {
                     name: RegisteredTrainingTool::CompareRecentRunning,
                     arguments: EmptyToolArguments {},
-                }),
+                },
             })
+        );
+        assert_eq!(
+            normalize_chat_decision(RawModelChatDecision::CallTool {
+                tool: RawTrainingToolCall {
+                    name: RegisteredTrainingTool::CompareRecentRunning,
+                    arguments: EmptyToolArguments {},
+                },
+            }),
+            Ok(ModelChatDecision::CallTool)
         );
         assert_eq!(
             parse_generated_json::<RawModelChatDecision>(
@@ -1362,34 +1345,31 @@ mod tests {
             parse_generated_json::<RawModelChatDecision>(
                 br#"{"action":"reply","text":"A safe general answer."}"#
             ),
-            Ok(RawModelChatDecision {
-                action: RawModelChatAction::Reply,
-                text: Some("A safe general answer.".into()),
-                scope: None,
+            Err(LocalModelError::InferenceFailed)
+        );
+        assert_eq!(
+            parse_generated_json::<RawModelChatDecision>(
+                br#"{"action":"reply","text":"A safe general answer.","scope":"general","tool":"hidden"}"#
+            ),
+            Err(LocalModelError::InferenceFailed)
+        );
+        assert_eq!(
+            parse_generated_json::<RawModelChatDecision>(
+                br#"{"action":"reply","text":"A safe general answer.","scope":"general"}"#
+            ),
+            Ok(RawModelChatDecision::Reply {
+                text: "A safe general answer.".into(),
+                scope: ReplyScope::General,
                 citations: Vec::new(),
-                tool: None,
             })
         );
         assert_eq!(
-            normalize_chat_decision(
-                RawModelChatDecision {
-                    action: RawModelChatAction::CallTool,
-                    text: Some("unexpected content".into()),
-                    scope: None,
-                    citations: Vec::new(),
-                    tool: None,
-                },
-                &ModelChatRequest {
-                    phase: ModelChatPhase::ChooseAction,
-                    messages: vec![ModelChatMessage {
-                        role: ModelChatRole::User,
-                        text: "Compare my recent running.".into(),
-                    }],
-                    previous_evidence: None,
-                    tool_result: None,
-                },
+            parse_generated_json::<RawModelChatDecision>(
+                br#"{"action":"ask_clarifying_question","text":"Which change do you mean?"}"#
             ),
-            Err(LocalModelError::InferenceFailed)
+            Ok(RawModelChatDecision::AskClarifyingQuestion {
+                text: "Which change do you mean?".into(),
+            })
         );
         assert_eq!(
             parse_generated_json::<ModelChatAnswer>(
@@ -1510,21 +1490,24 @@ mod tests {
         };
         let wrapped = br#"Here is the result: {"text":"The recent group has a wider pace spread.","citations":["E4"]} I hope this helps."#;
 
-        assert_eq!(parse_generated_explanation(wrapped), Ok(expected));
+        assert_eq!(
+            parse_generated_json::<ModelExplanation>(wrapped),
+            Ok(expected)
+        );
     }
 
     #[test]
     fn generated_explanation_parser_rejects_incomplete_or_wrong_shape_json() {
         assert_eq!(
-            parse_generated_explanation(br#"{"text":"unfinished","citations":["E1"]"#),
+            parse_generated_json::<ModelExplanation>(br#"{"text":"unfinished","citations":["E1"]"#),
             Err(LocalModelError::InferenceFailed)
         );
         assert_eq!(
-            parse_generated_explanation(br#"{"answer":"not the contract"}"#),
+            parse_generated_json::<ModelExplanation>(br#"{"answer":"not the contract"}"#),
             Err(LocalModelError::InferenceFailed)
         );
         assert_eq!(
-            parse_generated_explanation(
+            parse_generated_json::<ModelExplanation>(
                 br#"{"text":"The recent pace appears faster than the previous pace, but these runs do not show why.","citations":["E7"]}"#,
             ),
             Err(LocalModelError::InferenceFailed)
